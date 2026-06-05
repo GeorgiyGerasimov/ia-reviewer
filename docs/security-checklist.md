@@ -400,6 +400,27 @@ shouldn't contain `..` paths today. `RepoFile.path` lives in
 `ReviewState` and gets checkpointed — any future code path that
 accepts external state must NOT be able to escape.
 
+### Symlink leak via cloned repo files
+
+**Where.** [`src/integrations/repo_fetcher.py::list_repo_files`](../src/integrations/repo_fetcher.py)
+— skips symlinks entirely before enumerating files into `RepoFile`s.
+
+**What.** A malicious GitHub repo with a symlink (e.g. `cfg.ini ->
+/etc/shadow`) used to be enumerated as if it were a regular file —
+`Path.is_file()` and `Path.stat()` both follow symlinks by default.
+The downstream reviewer then `read_text()`'d the symlink target and
+shipped its contents to the LLM gateway (and Langfuse trace, and
+potentially the published report). One-line fix: `if path.is_symlink():
+continue` BEFORE any `is_file()` / `stat()` calls. Full attack
+walkthrough in
+[`docs/observed-quality-cases/symlink-leak-anatomy.md`](observed-quality-cases/symlink-leak-anatomy.md).
+
+**Why this matters.** This was the first real bug surfaced by
+ia-reviewer running against itself with Qwen3.6-27B as the reviewer
+model — a direct validation of the project's thesis. Existed since
+the initial repo-mode commit, survived multiple manual security
+audits including the original PR2.1 path-traversal pass.
+
 ### Input validation on /reviews
 
 **Where.** [`main.py::list_reviews`](../main.py).

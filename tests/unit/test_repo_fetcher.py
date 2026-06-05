@@ -158,6 +158,73 @@ def test_list_repo_files_walks_tree_filters_size_skips_git(tmp_path):
     assert files[0].size > 0
 
 
+def test_list_repo_files_skips_symlinks_to_outside_files(tmp_path):
+    """Symlink-leak guard: if a cloned repo contains a symlink pointing
+    outside the snapshot (e.g. to `/etc/shadow`, `~/.ssh/id_rsa`, host
+    `.env`), `list_repo_files` MUST NOT enumerate it. Otherwise the
+    reviewer downstream would read the file and ship its contents to
+    the LLM gateway — a host-secret exfiltration path.
+
+    Surfaced by the Qwen3.6-27B self-review case (2026-06-06). See
+    docs/observed-quality-cases/symlink-leak-anatomy.md for the full
+    attack walkthrough.
+    """
+    # Realistic project layout — one ordinary source file
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("def hello(): pass\n")
+
+    # Simulate a host secret OUTSIDE the snapshot
+    secret_dir = tmp_path.parent / "host-secret-area"
+    secret_dir.mkdir()
+    host_secret = secret_dir / "shadow"
+    host_secret.write_text("root:$6$weakhash$:0:0:99999:7:::\n")
+
+    # Attacker-planted symlink INSIDE the snapshot pointing OUTSIDE
+    (tmp_path / "config" / "evil").mkdir(parents=True)
+    (tmp_path / "config" / "evil" / "harmless-looking.cfg").symlink_to(host_secret)
+
+    files = list_repo_files(tmp_path)
+    paths = sorted(f.path for f in files)
+
+    # The real file is enumerated...
+    assert "src/app.py" in paths
+    # ...but the symlink is NOT (regardless of where it points).
+    assert "config/evil/harmless-looking.cfg" not in paths, (
+        f"symlink leaked into file list: {paths}"
+    )
+
+
+def test_list_repo_files_skips_symlinks_even_when_target_is_inside_snapshot(tmp_path):
+    """Defense in depth: even when the symlink points to a file INSIDE
+    the snapshot (which is technically safe), we still drop it. Two
+    reasons:
+      1. Avoids accidentally double-enumerating the same content under
+         two different `RepoFile.path` values.
+      2. A simple, blanket `skip if symlink` rule is much harder to
+         get wrong than a "resolve and compare" check that has to
+         handle relative paths, ../ sequences, and cross-filesystem
+         edge cases.
+    """
+    (tmp_path / "real.py").write_text("payload")
+    (tmp_path / "alias.py").symlink_to(tmp_path / "real.py")
+
+    files = list_repo_files(tmp_path)
+    paths = sorted(f.path for f in files)
+    assert "real.py" in paths
+    assert "alias.py" not in paths
+
+
+def test_list_repo_files_handles_broken_symlinks_without_crashing(tmp_path):
+    """Broken symlink (target doesn't exist) — must not raise; should
+    be silently skipped same as live symlinks."""
+    (tmp_path / "ok.py").write_text("ok")
+    (tmp_path / "dangling.txt").symlink_to(tmp_path / "does-not-exist")
+
+    files = list_repo_files(tmp_path)
+    paths = sorted(f.path for f in files)
+    assert paths == ["ok.py"]
+
+
 def test_clone_repo_raises_when_git_missing(mocker, tmp_path):
     """If `git` is not on PATH, raise a clear error rather than crashing
     deep in subprocess. The app's lifespan logs a warning at startup; this
