@@ -1,0 +1,51 @@
+{
+  "$schema": "Same shape as benchmarks/judge/cases.json — {criteria, cases[]}. The DIFFERENCE: the fixture is NOT a full security review report. It is the side-by-side EVAL DOCUMENT that the inline LLMJudge gate sees inside the format_report graph node: '## Findings (ground truth)' + '## Proposed TL;DR (under review)'. The criteria below are formatter-specific (do not invent files / CVEs / severities) and grade the TL;DR against the findings section verbatim. Runner: benchmarks.run.run_judge_benchmark with --suite=judge-formatter.",
+  "criteria": [
+    {"name": "tldr_only_real_files", "description": "The 'Proposed TL;DR' section ONLY references file paths that appear in the 'Findings (ground truth)' section above. If the TL;DR mentions a path not listed there, mark as not met."},
+    {"name": "tldr_only_real_cves", "description": "Any CVE id mentioned in the 'Proposed TL;DR' must also appear verbatim in the 'Findings (ground truth)' section. Inventing CVE numbers (or using placeholder shapes like 'CVE-XXXX-XXXX') is not acceptable."},
+    {"name": "tldr_respects_severity", "description": "The TL;DR must not upgrade or downgrade severity buckets. If a finding is listed as `[major]` in the ground truth, the TL;DR may not call it critical (or minor). Severity drift between the ground truth and the TL;DR is a failure."},
+    {"name": "tldr_no_invented_findings", "description": "The TL;DR must not add findings that are absent from the ground truth — no extrapolation ('if this is exploitable then…') and no items the reviewer never produced."}
+  ],
+  "cases": [
+    {
+      "name": "good-grounded-tldr",
+      "fixture": "good_grounded.md",
+      "expected": {"passed": true, "must_fail_criteria": []}
+    },
+    {
+      "name": "good-grounded-tldr-with-real-cve",
+      "fixture": "good_grounded_with_cve.md",
+      "expected": {"passed": true, "must_fail_criteria": []}
+    },
+    {
+      "name": "good-minimal-tldr",
+      "fixture": "good_minimal_tldr.md",
+      "expected": {"passed": true, "must_fail_criteria": []}
+    },
+    {
+      "name": "bad-invented-file-path",
+      "fixture": "bad_invented_file.md",
+      "expected": {"passed": false, "must_fail_criteria": ["tldr_only_real_files"]}
+    },
+    {
+      "name": "bad-invented-cve-number",
+      "fixture": "bad_invented_cve.md",
+      "expected": {"passed": false, "must_fail_criteria": ["tldr_only_real_cves"]}
+    },
+    {
+      "name": "bad-severity-drift-major-to-critical",
+      "fixture": "bad_severity_drift.md",
+      "expected": {"passed": false, "must_fail_criteria": ["tldr_respects_severity"]}
+    },
+    {
+      "name": "bad-invented-extra-finding",
+      "fixture": "bad_extra_finding.md",
+      "expected": {"passed": false, "must_fail_criteria": ["tldr_no_invented_findings"]}
+    },
+    {
+      "name": "bad-multi-fail-invented-package-and-cve",
+      "fixture": "bad_multi_fail.md",
+      "expected": {"passed": false, "must_fail_criteria": ["tldr_only_real_files", "tldr_only_real_cves"]}
+    }
+  ]
+}

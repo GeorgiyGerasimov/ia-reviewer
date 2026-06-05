@@ -1,10 +1,15 @@
 """Benchmark runner — loads cases from JSON, exercises the target
 component, reports a success-rate.
 
-Two suites:
-  * validator   — RequestValidator against `benchmarks/validator/cases.json`
-  * dependency  — DependencyScanner against `benchmarks/dependency/cases.json`,
-                  with OSV responses mocked from the case's own payload
+Four suites:
+  * validator         — RequestValidator against `benchmarks/validator/cases.json`
+  * dependency        — DependencyScanner against `benchmarks/dependency/cases.json`,
+                        with OSV responses mocked from the case's own payload
+  * judge             — LLMJudge against `benchmarks/judge/cases.json` (the
+                        published-report rubric — used by the offline CLI)
+  * judge-formatter   — LLMJudge against `benchmarks/judge_formatter/cases.json`
+                        (the formatter inline-gate rubric — used by
+                        FORMATTER_JUDGE_CHECK in src/agents/report_formatter.py)
 
 CLI usage:
     python -m benchmarks.run validator
@@ -460,6 +465,17 @@ def _grade_judge_case(
 _DEFAULT_VALIDATOR_PATH = Path(__file__).parent / "validator" / "cases.json"
 _DEFAULT_DEPENDENCY_PATH = Path(__file__).parent / "dependency" / "cases.json"
 _DEFAULT_JUDGE_PATH = Path(__file__).parent / "judge" / "cases.json"
+# Second judge calibration set, for the formatter's inline LLMJudge gate
+# (`FORMATTER_JUDGE_CHECK=True` in src/agents/report_formatter.py). The
+# rubric is different (4 formatter-specific criteria like
+# `tldr_only_real_files`) and the fixtures are side-by-side eval docs
+# (findings + proposed TL;DR) — not full security review reports. The
+# runner is the same `run_judge_benchmark` because the contract is
+# identical: load cases + criteria, ask LLMJudge to grade each fixture,
+# compare against the calibration label.
+_DEFAULT_JUDGE_FORMATTER_PATH = (
+    Path(__file__).parent / "judge_formatter" / "cases.json"
+)
 
 
 def _cli(argv: list[str] | None = None) -> int:
@@ -469,8 +485,11 @@ def _cli(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "suite",
-        choices=("validator", "dependency", "judge", "all"),
-        help="Which suite(s) to run.",
+        choices=("validator", "dependency", "judge", "judge-formatter", "all"),
+        help="Which suite(s) to run. `judge` calibrates the report-rubric "
+        "judge (used by `python -m src.evals.judge_report`). `judge-formatter` "
+        "calibrates the formatter inline-gate judge (used by "
+        "FORMATTER_JUDGE_CHECK in src/agents/report_formatter.py).",
     )
     parser.add_argument(
         "--mock-llm",
@@ -489,7 +508,9 @@ def _cli(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     suites_to_run: list[str] = (
-        ["validator", "dependency", "judge"] if args.suite == "all" else [args.suite]
+        ["validator", "dependency", "judge", "judge-formatter"]
+        if args.suite == "all"
+        else [args.suite]
     )
     results: list[BenchmarkResult] = []
     for s in suites_to_run:
@@ -501,6 +522,15 @@ def _cli(argv: list[str] | None = None) -> int:
             results.append(asyncio.run(
                 run_judge_benchmark(_DEFAULT_JUDGE_PATH, mock_judge=args.mock_llm)
             ))
+        elif s == "judge-formatter":
+            # Same runner as `judge`, different cases.json. The runner
+            # tags `BenchmarkResult.suite="judge"` for both — re-tag to
+            # disambiguate in the rendered output.
+            judge_fmt = asyncio.run(run_judge_benchmark(
+                _DEFAULT_JUDGE_FORMATTER_PATH, mock_judge=args.mock_llm
+            ))
+            judge_fmt.suite = "judge-formatter"
+            results.append(judge_fmt)
         else:
             results.append(asyncio.run(
                 run_dependency_benchmark(_DEFAULT_DEPENDENCY_PATH)

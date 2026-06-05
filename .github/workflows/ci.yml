@@ -45,14 +45,15 @@ jobs:
       - name: Ruff (lint)
         run: ruff check src/ tests/ main.py benchmarks/
 
-      - name: Pytest (391 tests)
+      - name: Pytest
         run: pytest -v --tb=short
 
-      # Two benchmark gates. The judge suite is intentionally NOT gated
-      # here — it's a calibration set that only makes sense against a
-      # live LLM (mock mode misses 5/8 cases by design). Run it
-      # locally / from a separate workflow if you want to track
-      # judge accuracy over time.
+      # Two benchmark gates. The `judge` and `judge-formatter` suites
+      # are intentionally NOT gated here — they're calibration sets
+      # that only make sense against a live LLM (mock mode misses
+      # every `bad-*` case by design — the miss-count IS the
+      # value-add measurement). Run them locally / from a separate
+      # workflow if you want to track judge accuracy over time.
       - name: Benchmark — dependency (deterministic, gate at 100%)
         run: python -m benchmarks.run dependency --min-success-rate 1.0
 
