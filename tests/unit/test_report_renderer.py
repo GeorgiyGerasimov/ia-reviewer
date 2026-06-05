@@ -198,6 +198,143 @@ def test_legacy_render_exploit_sibling_import_still_works():
     assert callable(_render_exploit_sibling)
 
 
+# ── structuring: severity-ordering + executive summary ────────────────
+
+
+def test_render_review_sorts_findings_by_severity_within_role(renderer):
+    """Inside a per-role section, findings are sorted critical → major →
+    minor → info regardless of input order. Eye lands on the worst
+    item first instead of having to scan the list."""
+    md = renderer.render_review(
+        reviews=[
+            _review("injection", "critical", findings=[
+                {"file": "low.py", "issue": "weak hash", "severity": "minor"},
+                {"file": "hi.py", "issue": "sqli", "severity": "critical"},
+                {"file": "mid.py", "issue": "xss", "severity": "major"},
+                {"file": "trivia.py", "issue": "trailing space", "severity": "info"},
+            ]),
+        ],
+        exploit_proposals=[],
+        request=None,
+    )
+    # Each finding renders on its own bullet line. Find the order they appear.
+    body = md.split("### Injection")[1]
+    pos_critical = body.find("[critical]")
+    pos_major = body.find("[major]")
+    pos_minor = body.find("[minor]")
+    pos_info = body.find("[info]")
+    assert -1 < pos_critical < pos_major < pos_minor < pos_info, (
+        f"findings not sorted by severity; positions: "
+        f"critical={pos_critical} major={pos_major} minor={pos_minor} info={pos_info}\n"
+        f"body:\n{body}"
+    )
+
+
+def test_render_review_includes_severity_breakdown_table_when_findings_present(renderer):
+    """A counts table broken down by severity × role lands in the report
+    right after the overall-severity header. Operators see the shape of
+    the run before reading prose."""
+    md = renderer.render_review(
+        reviews=[
+            _review("dependency", "critical", findings=[
+                {"package": "flask", "issue": "RCE", "severity": "critical"},
+                {"package": "flask", "issue": "RCE", "severity": "critical"},
+                {"package": "x", "issue": "low", "severity": "minor"},
+            ]),
+            _review("injection", "major", findings=[
+                {"file": "a.py", "issue": "sqli", "severity": "critical"},
+                {"file": "b.py", "issue": "xss", "severity": "major"},
+                {"file": "c.py", "issue": "xss", "severity": "major"},
+                {"file": "d.py", "issue": "xss", "severity": "major"},
+            ]),
+            _review("owasp", "minor", findings=[
+                {"file": "cfg", "issue": "weak", "severity": "minor"},
+            ]),
+        ],
+        exploit_proposals=[],
+        request=None,
+    )
+    # Table headers must mention every role label + Total
+    assert "| Severity " in md
+    assert "Dependencies" in md and "Injection" in md and "OWASP Top 10" in md
+    # Critical row: 2 in dependency + 1 in injection + 0 in owasp = 3
+    assert "| Critical | 2 | 1 | 0 | 3 |" in md
+    # Major: 0 + 3 + 0 = 3
+    assert "| Major" in md
+    # Total row (bold)
+    assert "**Total**" in md
+
+
+def test_render_review_omits_breakdown_table_when_no_findings(renderer):
+    """When every reviewer returns 0 findings, the counts table is
+    noise — drop it. The per-role summaries still render."""
+    md = renderer.render_review(
+        reviews=[
+            _review("dependency", "info"),
+            _review("injection", "info"),
+            _review("owasp", "info"),
+        ],
+        exploit_proposals=[],
+        request=None,
+    )
+    assert "| Severity " not in md
+    # Sanity: report still has the role sections
+    assert "### Dependencies" in md
+
+
+def test_render_review_critical_callout_when_critical_findings_present(renderer):
+    """A cross-cutting `### Critical findings (N)` section is inserted
+    BEFORE per-role sections when any critical findings exist. Each entry
+    is tagged with its role so the operator sees the worst items in one
+    glance regardless of which reviewer produced them."""
+    md = renderer.render_review(
+        reviews=[
+            _review("injection", "critical", findings=[
+                {"file": "a.py", "issue": "sqli", "severity": "critical"},
+            ]),
+            _review("dependency", "critical", findings=[
+                {"file": "requirements.txt", "package": "flask",
+                 "issue": "RCE", "severity": "critical"},
+            ]),
+            _review("owasp", "minor", findings=[
+                {"file": "cfg", "issue": "weak", "severity": "minor"},
+            ]),
+        ],
+        exploit_proposals=[],
+        request=None,
+    )
+    assert "### Critical findings (2)" in md
+    # Callout must precede per-role sections
+    pos_callout = md.find("### Critical findings")
+    pos_first_role = min(
+        (md.find(s) for s in ("### Dependencies", "### Injection", "### OWASP Top 10")
+         if md.find(s) > -1),
+        default=-1,
+    )
+    assert -1 < pos_callout < pos_first_role
+    # Both critical findings appear in the callout with their role tag
+    callout = md[pos_callout:pos_first_role]
+    assert "[injection]" in callout and "sqli" in callout
+    assert "[dependency]" in callout and "flask" in callout
+    # Minor finding must NOT appear in the callout
+    assert "weak" not in callout
+
+
+def test_render_review_no_critical_callout_when_no_critical(renderer):
+    """If nothing critical was found, the callout section is omitted —
+    don't show empty noise."""
+    md = renderer.render_review(
+        reviews=[
+            _review("injection", "major", findings=[
+                {"file": "a.py", "issue": "xss", "severity": "major"},
+            ]),
+        ],
+        exploit_proposals=[],
+        request=None,
+    )
+    assert "### Critical findings" not in md
+
+
 # ── pure: no I/O dependencies ──────────────────────────────────────────
 
 
