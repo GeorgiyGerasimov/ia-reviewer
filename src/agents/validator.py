@@ -19,6 +19,7 @@ import re
 from src.graph.state import ReviewRequest, ReviewState, ValidationVerdict
 from src.models.factory import ModelFactory
 from src.utils.config import settings
+from src.utils.llm_parsing import strip_thinking_trace
 
 _DEFAULT_MAX_DIFF_CHARS = 200_000
 _DEFAULT_MODEL = "claude-sonnet-4-6"
@@ -204,7 +205,15 @@ class RequestValidator:
 
 
 def _parse_llm_response(content: str) -> ValidationVerdict:
-    """Strict JSON expected. On any parse failure, default to accept."""
+    """Strict JSON expected. On any parse failure, default to accept.
+
+    Hybrid-thinking models (Qwen3.6-27B, DeepSeek R1, o1-style) wrap the
+    actual JSON in a long `</think>`-fenced chain-of-thought trace.
+    Without the strip below, every response from such a model falls into
+    the default-accept branch — which would mask a real REJECT verdict.
+    Same strip pattern as `BaseReviewer._parse_response` (PR #7).
+    """
+    content = strip_thinking_trace(content)
     try:
         data = json.loads(content.strip())
         verdict = data.get("verdict", "").lower()
