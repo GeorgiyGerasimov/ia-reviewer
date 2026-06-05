@@ -3,7 +3,7 @@
 The `timed_node` helper has its own unit tests; this integration test
 proves that `build_review_graph` actually applies the wrapper to every
 node it registers. A compile-time mistake (forgetting `timed_node(...)`
-on one of the eleven `add_node` calls) would silently drop that node
+on one of the twelve `add_node` calls) would silently drop that node
 from the metric stream — this test catches that.
 """
 

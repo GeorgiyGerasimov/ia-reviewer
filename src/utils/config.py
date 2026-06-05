@@ -163,6 +163,30 @@ class Settings(BaseSettings):
     # and the prompt bloat from a long list hurts more than it helps.
     RAG_TOP_K: int = 5
 
+    # ── Report formatter (optional LLM-copywriter) ──────────────────────
+    # When True, a `format_report` graph node sits between
+    # `aggregate_results` and `publish_report`, asks an LLM to write a
+    # 2-3 paragraph TL;DR over the structured findings, and splices a
+    # `### TL;DR` section into the report body right after the overall-
+    # severity header. Fail-soft: any error or empty/oversized response
+    # → the deterministic report from aggregate_results gets published
+    # unchanged. The graph never blocks on this node.
+    #
+    # Default OFF — the deterministic Summary table + Critical findings
+    # callout from PR #2 already cover the structural readability gap;
+    # this is the optional prose polish on top.
+    ENABLE_REPORT_FORMATTER: bool = False
+    # Per-call model override for the formatter, same pattern as
+    # JUDGE_MODEL. Empty = use the formatter's built-in default (same
+    # as the reviewers). Set to a stronger model when the reviewers
+    # use a weaker one and you want the summary to be sharper.
+    REPORT_FORMATTER_MODEL: str = ""
+    # Hard cap on the LLM's response length (characters). The
+    # `_format_finding`-style report bodies are usually under 1000 chars
+    # for the TL;DR section; anything past this cap is treated as the
+    # model going off-rails and dropped silently (fail-soft).
+    REPORT_FORMATTER_MAX_CHARS: int = 2000
+
     # ── LLM-as-judge model override ─────────────────────────────────────
     # The judge (`src/evals/llm_judge.py`) defaults to the same model as
     # the reviewers. In practice you often want it on a **stronger** model

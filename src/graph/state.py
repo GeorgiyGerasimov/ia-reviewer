@@ -153,6 +153,15 @@ class ReviewState:
     # Empty dict means "no past findings retrieved" — could be a fresh
     # repo, an embedder failure (fail-soft), or RAG disabled by config.
     past_findings_by_role: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    # Optional LLM-copywriter output (PR #3). Empty string means "no TL;DR
+    # was generated" — either because `ENABLE_REPORT_FORMATTER=False` (the
+    # default), the report had no findings to summarise, or the formatter
+    # call failed/was dropped (fail-soft contract).
+    #
+    # Populated by `format_report` node; consumed by `finalize_exploits`
+    # which calls `ReportRenderer.splice_tldr(body, state.report_tldr)`
+    # on every re-render so the TL;DR survives the post-exploit re-pass.
+    report_tldr: str = ""
     final_report: str = ""
     pr_comment_id: int | None = None
     error: str = ""
