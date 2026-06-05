@@ -1,0 +1,275 @@
+# ─────────────────────────────────────────────────────────────────────────
+# ⚠️  SECURITY NOTICE — dev defaults
+# ─────────────────────────────────────────────────────────────────────────
+# Every credential below uses an unsafe development default so a fresh
+# `docker compose up` works zero-touch on a laptop. None of these values
+# are appropriate for a publicly-reachable deployment. **Before exposing
+# any port outside localhost, override the following in your `.env`:**
+#
+#   Postgres:        POSTGRES_USER, POSTGRES_PASSWORD
+#   ClickHouse:      (hard-coded `clickhouse/clickhouse` — edit this file)
+#   MinIO:           (hard-coded `minio/miniosecret` — edit this file)
+#   Langfuse auth:   LANGFUSE_NEXTAUTH_SECRET, LANGFUSE_SALT,
+#                    LANGFUSE_ENCRYPTION_KEY, LANGFUSE_REDIS_AUTH
+#   Langfuse seed:   LANGFUSE_INIT_USER_PASSWORD, LANGFUSE_PUBLIC_KEY,
+#                    LANGFUSE_SECRET_KEY
+#
+# See `docs/security-defaults.md` for the full list + generation snippets.
+# ─────────────────────────────────────────────────────────────────────────
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: ia-reviewer-postgres
+    restart: unless-stopped
+    environment:
+      # ⚠️ DEV ONLY: `ia/ia`. Override `POSTGRES_USER` + `POSTGRES_PASSWORD`
+      # in `.env` before exposing port 5432 outside localhost.
+      POSTGRES_USER: ${POSTGRES_USER:-ia}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ia}
+      POSTGRES_DB: ${POSTGRES_DB:-ia_reviewer}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ia-reviewer:latest
+    container_name: ia-reviewer
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # Override DATABASE_URL from .env: inside compose the host is `postgres`,
+      # not localhost. Keep .env's DATABASE_URL pointed at localhost for the
+      # case when the app is run from .venv against the compose-managed db.
+      DATABASE_URL: postgresql://${POSTGRES_USER:-ia}:${POSTGRES_PASSWORD:-ia}@postgres:5432/${POSTGRES_DB:-ia_reviewer}
+      # When the observability profile is up, override LANGFUSE_HOST so the
+      # app reaches Langfuse over the docker network. From .venv (no compose
+      # app service), .env's localhost value applies.
+      LANGFUSE_HOST: ${LANGFUSE_HOST_IN_COMPOSE:-http://langfuse-web:3000}
+    volumes:
+      # Reports and snapshots dirs are bind-mounted so you can inspect
+      # them from the host (`ls reports/`, `cat reports/<tid>.md`) and so
+      # data survives container rebuilds. Both dirs are pre-owned by the
+      # `app` user inside the image (see Dockerfile).
+      - ./reports:/app/reports
+      - ./snapshots:/app/snapshots
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/health', timeout=3).raise_for_status()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ── Langfuse observability stack ───────────────────────────────────────────
+  # Default-on (no profile gate) — every `docker compose up` brings up the
+  # full tracing stack alongside the app. UI is at http://localhost:3000;
+  # first boot self-seeds an org / project / user using the keys below so
+  # the app can start sending traces immediately without manual setup.
+  #
+  # If you ever need to skip Langfuse (e.g. low-memory CI), `docker compose
+  # stop langfuse-web langfuse-worker clickhouse redis minio` after `up`,
+  # or scope the up command:
+  #   docker compose up -d app postgres
+
+  langfuse-web:
+    image: langfuse/langfuse:3
+    container_name: ia-reviewer-langfuse-web
+    restart: unless-stopped
+    depends_on:
+      langfuse-worker:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    ports:
+      - "${LANGFUSE_PORT:-3000}:3000"
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-ia}:${POSTGRES_PASSWORD:-ia}@postgres:5432/langfuse
+      NEXTAUTH_URL: ${LANGFUSE_NEXTAUTH_URL:-http://localhost:3000}
+      # ⚠️ DEV ONLY — these three signing/encryption secrets are static
+      # placeholders. Sessions stay valid across rebuilds and trace data
+      # is encrypted with a known key — fine for a laptop, NOT for any
+      # publicly-reachable deployment. Override in `.env`:
+      #   LANGFUSE_NEXTAUTH_SECRET=$(openssl rand -hex 32)
+      #   LANGFUSE_SALT=$(openssl rand -hex 32)
+      #   LANGFUSE_ENCRYPTION_KEY=$(openssl rand -hex 32)
+      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:-replace-me-with-a-long-random-string}
+      SALT: ${LANGFUSE_SALT:-replace-me-with-a-long-random-string}
+      ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:-0000000000000000000000000000000000000000000000000000000000000000}
+      TELEMETRY_ENABLED: "false"
+      LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: "false"
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
+      # ⚠️ DEV ONLY: ClickHouse `clickhouse/clickhouse`. Replace before
+      # exposing port 8123 / 9000 outside localhost.
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: clickhouse
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      # ⚠️ DEV ONLY: Redis auth shared with the `redis` service below.
+      # Replace via LANGFUSE_REDIS_AUTH before exposing Redis externally.
+      REDIS_AUTH: ${LANGFUSE_REDIS_AUTH:-myredissecret}
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+      # ⚠️ DEV ONLY: MinIO `minio/miniosecret` — must match the MinIO
+      # service block at the bottom of this file. Replace BOTH together
+      # if you change them.
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minio
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: miniosecret
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_EVENT_UPLOAD_PREFIX: events/
+      # Self-seed on first boot — these match the keys baked into .env.example
+      # so `docker compose up` works zero-touch.
+      LANGFUSE_INIT_ORG_ID: ia-reviewer
+      LANGFUSE_INIT_ORG_NAME: ia-reviewer
+      LANGFUSE_INIT_PROJECT_ID: ia-reviewer
+      LANGFUSE_INIT_PROJECT_NAME: ia-reviewer
+      # ⚠️ DEV ONLY: `pk-lf-dev` / `sk-lf-dev`. Anyone with these can write
+      # traces to your Langfuse instance. Override LANGFUSE_PUBLIC_KEY /
+      # LANGFUSE_SECRET_KEY in `.env` and also update the app's matching
+      # values so trace ingestion keeps working.
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-pk-lf-dev}
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-sk-lf-dev}
+      # Langfuse v3 enforces a strict RFC-style email format (must have a
+      # TLD). `dev@local` is rejected; `dev@local.dev` passes.
+      LANGFUSE_INIT_USER_EMAIL: ${LANGFUSE_INIT_USER_EMAIL:-dev@local.dev}
+      LANGFUSE_INIT_USER_NAME: ${LANGFUSE_INIT_USER_NAME:-dev}
+      # ⚠️ DEV ONLY: Langfuse UI login is `dev@local.dev` / `localdev123!`.
+      # Replace LANGFUSE_INIT_USER_PASSWORD in `.env` before deploying.
+      LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD:-localdev123!}
+
+  langfuse-worker:
+    image: langfuse/langfuse-worker:3
+    container_name: ia-reviewer-langfuse-worker
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    # ⚠️ Worker uses the SAME secrets as `langfuse-web` — see that block
+    # above for the override pointers. Any value changed here without
+    # matching the web service will cause data corruption (mismatched
+    # encryption key → traces can't be read).
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-ia}:${POSTGRES_PASSWORD:-ia}@postgres:5432/langfuse
+      SALT: ${LANGFUSE_SALT:-replace-me-with-a-long-random-string}
+      ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:-0000000000000000000000000000000000000000000000000000000000000000}
+      TELEMETRY_ENABLED: "false"
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: clickhouse
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_AUTH: ${LANGFUSE_REDIS_AUTH:-myredissecret}
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minio
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: miniosecret
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_EVENT_UPLOAD_PREFIX: events/
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24
+    container_name: ia-reviewer-clickhouse
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_DB: default
+      # ⚠️ DEV ONLY: `clickhouse/clickhouse`. Not parameterised — change
+      # ALL FOUR occurrences in this file together (here + langfuse-web +
+      # langfuse-worker) when you rotate.
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: clickhouse
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - clickhouse_logs:/var/log/clickhouse-server
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  redis:
+    image: redis:7-alpine
+    container_name: ia-reviewer-redis
+    restart: unless-stopped
+    # ⚠️ DEV ONLY: Redis password defaults to `myredissecret` via
+    # LANGFUSE_REDIS_AUTH. Replace BOTH `--requirepass` AND the
+    # healthcheck's `-a` argument by overriding LANGFUSE_REDIS_AUTH in
+    # `.env`; they read the same variable so one override covers both.
+    command: >
+      --requirepass ${LANGFUSE_REDIS_AUTH:-myredissecret}
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${LANGFUSE_REDIS_AUTH:-myredissecret}", "ping"]
+      interval: 3s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    container_name: ia-reviewer-minio
+    restart: unless-stopped
+    entrypoint: sh
+    command: -c 'mkdir -p /data/langfuse && minio server --address ":9000" --console-address ":9001" /data'
+    environment:
+      # ⚠️ DEV ONLY: MinIO root credentials `minio/miniosecret`. Not
+      # parameterised — when rotating, update BOTH this block AND the
+      # `LANGFUSE_S3_EVENT_UPLOAD_*` blocks above (4 places total: web,
+      # worker, here MINIO_ROOT_USER, here MINIO_ROOT_PASSWORD).
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: miniosecret
+    ports:
+      - "${MINIO_API_PORT:-9090}:9000"
+      - "${MINIO_CONSOLE_PORT:-9091}:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "mc ready local || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+volumes:
+  pgdata:
+  clickhouse_data:
+  clickhouse_logs:
+  minio_data:

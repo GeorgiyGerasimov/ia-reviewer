@@ -1,0 +1,27 @@
+{
+  "name": "legacy-app",
+  "version": "1.0.0",
+  "lockfileVersion": 1,
+  "requires": true,
+  "dependencies": {
+    "lodash": {
+      "version": "4.17.11",
+      "resolved": "https://registry.npmjs.org/lodash/-/lodash-4.17.11.tgz",
+      "integrity": "sha1-…"
+    },
+    "minimist": {
+      "version": "1.2.0",
+      "resolved": "https://registry.npmjs.org/minimist/-/minimist-1.2.0.tgz"
+    },
+    "mocha": {
+      "version": "5.2.0",
+      "dev": true,
+      "dependencies": {
+        "debug": {
+          "version": "3.1.0",
+          "dev": true
+        }
+      }
+    }
+  }
+}

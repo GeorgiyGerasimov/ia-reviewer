@@ -1,0 +1,883 @@
+"""ia-reviewer FastAPI entry point.
+
+Endpoints:
+    GET  /                          — HTML UI (form + chat panel)
+    GET  /health                    — liveness probe
+    POST /review                    — fire-and-forget security review; returns thread_id
+    GET  /chat/{thread_id}/history  — chat history for a thread
+    WS   /ws/chat/{thread_id}       — live chat for a thread
+
+Run with `uvicorn main:app --host 0.0.0.0 --port 8000`.
+"""
+
+import asyncio
+import logging
+import uuid
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.templating import Jinja2Templates
+from langgraph.types import Command
+
+from src.agents.coordinator import CoordinatorAgent
+from src.chat.hub import ChatHub
+from src.chat.progress_store import ProgressStore
+from src.chat.store import ChatMessage, ChatStore
+from src.graph.coordinator import build_review_graph
+from src.graph.state import ALLOWED_SCOPE_ROLES, ReviewRequest, ReviewState
+from src.integrations.github import GitHubClient
+from src.integrations.repo_fetcher import (
+    cleanup_snapshot,
+    clone_repo,
+    list_repo_files,
+    normalize_repo_url,
+)
+from src.storage.review_store import ReviewStore
+from src.utils.checkpointer import open_checkpointer
+from src.utils.config import settings
+from src.utils.logger import get_logger
+from src.utils.tracing import get_langfuse_callback
+
+logger = get_logger(__name__)
+
+_TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+
+# Phase C — how long to wait for the human to approve an exploit-proposal
+# interrupt before auto-declining it. Phase B review_clarification interrupts
+# do NOT use this — the human is free to take as long as they want.
+EXPLOIT_TIMEOUT_SECONDS: float = 60.0
+
+# Hard cap for the `/reviews?limit=…` query — bounds DB and memory cost
+# of pagination. Anyone sending `?limit=999999` ends up with 200 rows
+# rather than driving the server into OOM.
+MAX_REVIEWS_PAGE_SIZE: int = 200
+
+_APP_LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
+
+
+def _normalize_uvicorn_logging() -> None:
+    """Reformat uvicorn's own loggers to match our app's `<ts> | LEVEL | name | msg`
+    layout.
+
+    By default uvicorn prints request/lifecycle lines as `INFO:     <msg>` with
+    no timestamp, while our `src.*` loggers print `2026-06-04 11:08:14,302 | INFO …`.
+    Mixing the two makes it hard to correlate events in time. We overwrite the
+    handler formatter on each known uvicorn logger so every line carries a
+    timestamp. `uvicorn.access` records carry per-request fields (client_addr,
+    request_line, status_code) which the format string templates against
+    `%(message)s` — uvicorn pre-formats them into the message already.
+    """
+    fmt = logging.Formatter(_APP_LOG_FORMAT)
+    for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        target = logging.getLogger(name)
+        for handler in target.handlers:
+            handler.setFormatter(fmt)
+
+
+# Per-thread registry of scheduled default-decline tasks so a user reply can
+# cancel a pending timeout. Keys are thread_ids.
+_pending_timeouts: dict[str, asyncio.Task] = {}
+
+
+def _register_routes(app: FastAPI) -> None:
+    @app.get("/")
+    async def index(request: Request):
+        return _TEMPLATES.TemplateResponse(request, "index.html")
+
+    @app.get("/img.png")
+    async def img() -> FileResponse:
+        """Serve the decorative Eeyore image that lives next to index.html."""
+        return FileResponse(
+            Path(__file__).parent / "templates" / "img.png",
+            media_type="image/png",
+        )
+
+    @app.get("/health")
+    async def health(request: Request) -> dict:
+        """Liveness probe + observability info the UI uses to render the
+        'Traces' link in the header.
+
+        `langfuse_url`:
+          - The configured `LANGFUSE_HOST` when a CallbackHandler is wired
+            on `app.state` (i.e. keys present + package importable). The UI
+            reveals a header link to this URL so operators can jump straight
+            to the trace view.
+          - `None` when tracing is disabled — the UI keeps the link hidden.
+
+        Returning the URL via /health means the UI never needs to hard-code
+        a host: Langfuse Cloud users get the cloud URL; default-compose
+        users get http://localhost:3000.
+        """
+        body: dict = {"status": "ok"}
+        if getattr(request.app.state, "langfuse_callback", None) is not None:
+            # `LANGFUSE_PUBLIC_URL` is the browser-facing URL. In default
+            # compose this is `http://localhost:3000`; for Langfuse Cloud,
+            # leave it empty and the cloud LANGFUSE_HOST is reused. The
+            # docker-internal host (`http://langfuse-web:3000`) lives only
+            # in LANGFUSE_HOST and is never returned to the browser.
+            body["langfuse_url"] = (
+                settings.LANGFUSE_PUBLIC_URL
+                or settings.LANGFUSE_HOST
+                or "http://localhost:3000"
+            )
+        else:
+            body["langfuse_url"] = None
+        return body
+
+    @app.get("/reviews")
+    async def list_reviews(request: Request) -> JSONResponse:
+        """Most-recent reviews, paginated. Empty list when no store is wired
+        (no DATABASE_URL → no persistence) so the UI can render the section
+        as empty instead of erroring.
+
+        Rows come back with native asyncpg types (`UUID`, `datetime`); use
+        `jsonable_encoder` to coerce those into JSON-safe strings.
+        """
+        store: ReviewStore | None = getattr(request.app.state, "review_store", None)
+        if store is None:
+            return JSONResponse([])
+        try:
+            limit = _parse_positive_int(
+                request.query_params.get("limit"),
+                default=50,
+                field="limit",
+                min_value=1,
+                max_value=MAX_REVIEWS_PAGE_SIZE,
+            )
+            offset = _parse_positive_int(
+                request.query_params.get("offset"),
+                default=0,
+                field="offset",
+                min_value=0,
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        rows = await store.list_reviews(limit=limit, offset=offset)
+        return JSONResponse(jsonable_encoder(rows), status_code=200)
+
+    @app.get("/reviews/{thread_id}")
+    async def get_review(request: Request, thread_id: str) -> JSONResponse:
+        """Single review + embedded findings. 404 when the row is missing
+        OR the store isn't wired (no DB)."""
+        store: ReviewStore | None = getattr(request.app.state, "review_store", None)
+        if store is None:
+            raise HTTPException(status_code=404, detail="review store not enabled")
+        row = await store.get_review(thread_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="review not found")
+        return JSONResponse(jsonable_encoder(row), status_code=200)
+
+    @app.post("/review")
+    async def trigger_review(request: Request, background: BackgroundTasks) -> JSONResponse:
+        body = await request.json()
+        pr_url = body.get("pr_url")
+        repo_url = body.get("repo_url")
+
+        # Exactly one of pr_url / repo_url must be supplied.
+        if not pr_url and not repo_url:
+            return JSONResponse(
+                {"error": "one of pr_url or repo_url is required"},
+                status_code=400,
+            )
+        if pr_url and repo_url:
+            return JSONResponse(
+                {"error": "mixed payload: provide pr_url or repo_url, not both"},
+                status_code=400,
+            )
+
+        scope_raw = body.get("scope", [])
+        if not isinstance(scope_raw, list):
+            return JSONResponse({"error": "scope must be a list of role names"}, status_code=400)
+
+        invalid = [s for s in scope_raw if s not in ALLOWED_SCOPE_ROLES]
+        if invalid:
+            return JSONResponse(
+                {
+                    "error": f"invalid scope roles: {invalid}; allowed: {list(ALLOWED_SCOPE_ROLES)}",
+                },
+                status_code=400,
+            )
+
+        thread_id = str(uuid.uuid4())
+        if pr_url:
+            background.add_task(_run_review, request.app, pr_url, scope_raw, thread_id)
+            return JSONResponse(
+                {"status": "started", "thread_id": thread_id, "pr_url": pr_url},
+                status_code=202,
+            )
+
+        # Canonicalize the repo URL up front: browser URLs commonly carry
+        # `/tree/<ref>`, `/blob/<ref>/file`, trailing `.git`, or trailing
+        # slash. Reject malformed input with 400 here instead of crashing
+        # the BackgroundTask on `git clone`. If `/tree/<ref>` was present
+        # and the caller didn't supply an explicit `ref`, use the
+        # extracted one.
+        try:
+            canonical_repo_url, extracted_ref = normalize_repo_url(repo_url)
+        except ValueError as e:
+            return JSONResponse({"error": f"invalid repo_url: {e}"}, status_code=400)
+        explicit_ref = body.get("ref")
+        ref = (
+            explicit_ref
+            if explicit_ref and explicit_ref != "HEAD"
+            else (extracted_ref or "HEAD")
+        )
+
+        background.add_task(
+            _run_repo_review, request.app, canonical_repo_url, ref, scope_raw, thread_id
+        )
+        return JSONResponse(
+            {
+                "status": "started",
+                "thread_id": thread_id,
+                "repo_url": canonical_repo_url,
+                "ref": ref,
+            },
+            status_code=202,
+        )
+
+    @app.get("/reports/{filename}")
+    async def get_report(request: Request, filename: str) -> PlainTextResponse:
+        """Serve a repo-mode review report saved as `<thread_id>.md`.
+
+        The directory is configured on `app.state.reports_dir` (production
+        reads `settings.REPORTS_DIR`; tests inject `tmp_path`). Returns 404
+        when the file is absent rather than echoing the requested name into
+        an error body, to avoid leaking arbitrary paths.
+        """
+        reports_dir: Path = request.app.state.reports_dir
+        # Reject any path-traversal attempt — only flat filenames are valid.
+        if "/" in filename or "\\" in filename or filename.startswith("."):
+            raise HTTPException(status_code=400, detail="invalid filename")
+        report_path = reports_dir / filename
+        # Defence-in-depth: even with the basename guard above, a
+        # symlink INSIDE reports_dir pointing OUT of it would let
+        # `is_file()` traverse and `read_text` leak arbitrary files
+        # the app process can read. `resolve()` walks symlinks; we
+        # require the resolved target to still sit under reports_dir.
+        try:
+            resolved = report_path.resolve()
+            root = reports_dir.resolve()
+        except OSError as exc:
+            logger.warning("resolve failed for %s: %s", report_path, exc)
+            raise HTTPException(status_code=404, detail="report not found") from exc
+        if not resolved.is_relative_to(root):
+            logger.warning(
+                "report path %r resolves outside reports_dir %r — refusing",
+                str(resolved), str(root),
+            )
+            raise HTTPException(status_code=404, detail="report not found")
+        if not resolved.is_file():
+            raise HTTPException(status_code=404, detail="report not found")
+        return PlainTextResponse(resolved.read_text(), media_type="text/markdown")
+
+    @app.get("/chat/{thread_id}/history")
+    async def chat_history(thread_id: str, request: Request) -> JSONResponse:
+        store: ChatStore = request.app.state.chat_store
+        messages = [m.to_dict() for m in store.get_history(thread_id)]
+        return JSONResponse(messages)
+
+    @app.websocket("/ws/chat/{thread_id}")
+    async def chat_ws(websocket: WebSocket, thread_id: str) -> None:
+        # Browser CSRF guard. The `Origin` header is set by every browser
+        # on the WS handshake; non-browser clients (CLI, websockets lib,
+        # the TestClient by default) omit it. We refuse browser origins
+        # that aren't in the configured allowlist, and let missing-Origin
+        # pass — the threat model is a malicious site loaded in the
+        # USER'S browser, not arbitrary clients on the internal network.
+        # Empty `settings.WS_ALLOWED_ORIGINS` disables the check entirely.
+        origin = websocket.headers.get("origin")
+        if origin is not None and not _ws_origin_is_allowed(origin):
+            logger.warning(
+                "rejecting WS connection from origin %r (thread_id=%s)",
+                origin, thread_id,
+            )
+            # 1008 = "Policy Violation" per RFC 6455. Browsers surface
+            # this as a clean close to the client without crash.
+            await websocket.close(code=1008)
+            return
+        await websocket.accept()
+        store: ChatStore = websocket.app.state.chat_store
+        hub: ChatHub = websocket.app.state.chat_hub
+        app_ref = websocket.app
+
+        await hub.connect(thread_id, websocket)
+
+        # Replay stored progress events first so the workflow diagram in
+        # the UI catches up to whatever stage the review has reached. Then
+        # the chat history (so messages render in chronological order).
+        progress_store: ProgressStore = websocket.app.state.progress_store
+        for event in progress_store.get(thread_id):
+            await websocket.send_json(event)
+        for msg in store.get_history(thread_id):
+            await websocket.send_json(msg.to_dict())
+
+        try:
+            while True:
+                data = await websocket.receive_json()
+                text = (data.get("text") or "").strip()
+                if not text:
+                    continue
+                message = ChatMessage(role="user", text=text)
+                store.append(thread_id, message)
+                await hub.broadcast(thread_id, message.to_dict())
+
+                # Phase B — if the graph is paused at an interrupt for this
+                # thread, treat the user's message as the resume payload
+                # instead of just chat noise. Resume runs in a background
+                # task so the WS loop stays responsive.
+                if await _has_pending_interrupt(app_ref, thread_id):
+                    asyncio.create_task(_resume_review(app_ref, thread_id, text))
+        except WebSocketDisconnect:
+            await hub.disconnect(thread_id, websocket)
+
+
+def _parse_positive_int(
+    raw: str | None,
+    *,
+    default: int,
+    field: str,
+    min_value: int = 0,
+    max_value: int | None = None,
+) -> int:
+    """Parse a query-param int, clamp to [min_value, max_value].
+
+    Raises `ValueError` with a user-facing message on:
+      - non-numeric input,
+      - negative input (when min_value=0) or below `min_value`.
+
+    Above `max_value` we DON'T raise — we clamp. Pagination is a
+    convenience, not a contract; sending a too-large limit is an
+    obvious typo / curiosity, not a malformed request. Clamping
+    transparently is friendlier than 400, the user just gets fewer
+    rows than they asked for.
+
+    `None` raw → `default` (no validation needed).
+    """
+    if raw is None or raw == "":
+        return default
+    try:
+        v = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field!r} must be an integer (got {raw!r})") from exc
+    if v < min_value:
+        raise ValueError(f"{field!r} must be >= {min_value} (got {v})")
+    if max_value is not None and v > max_value:
+        return max_value
+    return v
+
+
+def _ws_origin_is_allowed(origin: str) -> bool:
+    """True iff `origin` matches `settings.WS_ALLOWED_ORIGINS` (case-
+    insensitive). Empty allowlist → allow all (escape hatch for ops).
+
+    The origin comparison is done by exact string match. We don't try
+    to canonicalise port-only differences or scheme casing here because
+    the field validator on `Settings` already lower-cased the allowlist
+    entries, and the spec defines Origin matching as exact-string.
+    """
+    allowed = settings.WS_ALLOWED_ORIGINS or []
+    if not allowed:
+        return True  # check disabled
+    return origin.lower() in allowed
+
+
+def _trace_config(app: FastAPI, thread_id: str, state: ReviewState | None, trigger: str) -> dict:
+    """Build the LangGraph invocation config, attaching Langfuse tracing when
+    a CallbackHandler is wired on `app.state`.
+
+    The thread_id doubles as the Langfuse `session_id` so the chat-side
+    interrupts/resumes appear under the same Langfuse session as the
+    initial review run.
+    """
+    config: dict = {"configurable": {"thread_id": thread_id}}
+    handler = getattr(app.state, "langfuse_callback", None)
+    if handler is None:
+        return config
+    config["callbacks"] = [handler]
+    metadata: dict = {
+        "session_id": thread_id,
+        "tags": ["security-review", trigger],
+    }
+    if state is not None and state.request is not None:
+        metadata["user_id"] = state.request.author
+        metadata["pr_url"] = state.request.pr_url
+    config["metadata"] = metadata
+    return config
+
+
+async def _run_review(app: FastAPI, pr_url: str, scope: list[str], thread_id: str) -> None:
+    """Fetch the PR, build initial state, and run the security review graph.
+
+    Runs as a FastAPI BackgroundTask after the 202 response has been sent.
+    Uses `astream(mode="updates")` so progress envelopes can be broadcast to
+    the chat WebSocket on every node completion (the UI lights up its
+    workflow-diagram circles based on these).
+
+    If the graph pauses at an `interrupt()` (Phase B human-in-the-loop), the
+    pending question(s) are surfaced into the chat panel — the user then
+    answers via the WebSocket and `_resume_review` carries the resume back
+    to the graph.
+    """
+    try:
+        review_request = await app.state.github.fetch_pr(pr_url)
+        review_request.scope = scope
+        state = ReviewState(request=review_request, thread_id=thread_id)
+        config = _trace_config(app, thread_id, state, trigger="http")
+        await _stream_graph_with_progress(app, thread_id, state, config)
+        await _broadcast_pending_interrupts(app, thread_id)
+        await _persist_review(app, state)
+    except Exception as e:
+        logger.error("review failed for %s: %s", pr_url, e)
+
+
+async def _run_repo_review(
+    app: FastAPI,
+    repo_url: str,
+    ref: str,
+    scope: list[str],
+    thread_id: str,
+) -> None:
+    """Run a whole-repo security review for `repo_url@ref`.
+
+    Orchestrates:
+      1. Fetch the repo tree (`github.fetch_tree`) → populate `repo_files`.
+         The validator and per-specialist reviewers operate on this list.
+      2. Run the graph with `state.thread_id` set so CoordinatorAgent can
+         write `reports/<thread_id>.md` in publish.
+      3. Surface any interrupts to chat (same Phase B/C path as PR review).
+      4. After completion, broadcast a brief 'review complete' chip pointing
+         at the saved report.
+    """
+    snapshot_dir = None
+    try:
+        # Local shallow-clone instead of GitHub REST tree/blob fetches —
+        # avoids the 60 req/h anonymous rate limit on bigger repos.
+        # Surround the clone with progress envelopes so the UI can spin
+        # the `clone_repo` workflow circle while the subprocess runs and
+        # turn it green when it finishes.
+        await _emit_progress(app, thread_id, "clone_repo", "active")
+        snapshot_dir = await asyncio.to_thread(clone_repo, repo_url, ref)
+        await _emit_progress(app, thread_id, "clone_repo", "fired")
+        repo_files = list_repo_files(snapshot_dir)
+        review_request = ReviewRequest(
+            mode="repo",
+            repo_url=repo_url,
+            ref=ref,
+            snapshot_dir=str(snapshot_dir),
+            repo_files=repo_files,
+            scope=scope,
+        )
+        state = ReviewState(request=review_request, thread_id=thread_id)
+        config = _trace_config(app, thread_id, state, trigger="http_repo")
+        await _stream_graph_with_progress(app, thread_id, state, config)
+        await _broadcast_pending_interrupts(app, thread_id)
+        await _broadcast_repo_completion(app, thread_id)
+        await _persist_review(app, state)
+    except Exception as e:
+        logger.error("repo review failed for %s@%s: %s", repo_url, ref, e)
+    finally:
+        if snapshot_dir is not None:
+            cleanup_snapshot(snapshot_dir)
+
+
+async def _persist_review(app: FastAPI, state: ReviewState) -> None:
+    """Write the finalized review state into Postgres if a store is wired.
+
+    Silently no-op when `app.state.review_store is None` (no DATABASE_URL,
+    or init failed during lifespan). Any DB error is logged but does NOT
+    propagate — persistence is an audit side-effect, not the primary
+    deliverable (the markdown report is already on disk by this point).
+    """
+    store = getattr(app.state, "review_store", None)
+    if store is None:
+        return
+    try:
+        await store.save_review(state)
+    except Exception as e:
+        logger.error("ReviewStore.save_review failed: %s", e)
+
+
+async def _emit_progress(app: FastAPI, thread_id: str, node: str, status: str) -> None:
+    """Send a single progress envelope through both the persistent store
+    and the live WebSocket broadcast. Used for pre-graph "active" markers
+    (e.g. clone_repo) where the timing is owned by the orchestrator rather
+    than LangGraph's astream chunks."""
+    event = {"type": "progress", "node": node, "status": status}
+    app.state.progress_store.append(thread_id, event)
+    await app.state.chat_hub.broadcast(thread_id, event)
+
+
+def _classify_progress(node_name: str, update) -> str:
+    """Decide how the UI should colour the workflow circle for this node.
+
+    - `notify_rejection` always means the review was rejected → red.
+    - A node that returned `{}` (or a non-dict no-op) didn't produce any
+      meaningful work this run — scope-skipped specialist, or the final
+      drain of process_proposal with no findings to handle → gray.
+    - Anything else is a real, fired-with-work step → green.
+    """
+    if node_name == "notify_rejection":
+        return "rejected"
+    if not isinstance(update, dict) or not update:
+        return "empty"
+    return "fired"
+
+
+def _merge_chunk_into_state(state: ReviewState, update: dict) -> None:
+    """Apply a single LangGraph chunk update to our local accumulator.
+
+    LangGraph's astream(mode="updates") yields per-node partial updates;
+    we mirror its merge semantics here so we have a finalized state to
+    hand to ReviewStore.save_review once the stream completes.
+
+    `agent_reviews` and `exploit_proposals` carry an `add` reducer ─
+    concatenate. Everything else is last-write-wins (replace).
+    """
+    for key, value in update.items():
+        if key in ("agent_reviews", "exploit_proposals"):
+            current = getattr(state, key, []) or []
+            setattr(state, key, list(current) + list(value or []))
+        elif hasattr(state, key):
+            setattr(state, key, value)
+
+
+async def _stream_graph_with_progress(app: FastAPI, thread_id: str, state, config: dict) -> None:
+    """Drive `graph.astream` and broadcast a progress envelope per node.
+
+    Each chunk yielded by LangGraph in default streaming mode is a dict
+    keyed by node name → that node's update. For every key we
+      1. classify the status (fired / empty / rejected) so the UI can
+         choose the right colour;
+      2. record the event in `app.state.progress_store` so a late WS
+         client can replay the workflow state on connect (the BackgroundTask
+         starts immediately after the 202, so early events are lost otherwise);
+      3. broadcast the envelope live to any sockets already connected for
+         this thread.
+    A terminal `{"type": "progress", "node": "__done__"}` is emitted after
+    the stream ends — the UI uses it to gray out circles whose nodes never
+    fired at all (lone validator-accept path leaves notify_rejection cold,
+    etc.).
+    """
+    async for chunk in app.state.graph.astream(state, config=config):
+        if not isinstance(chunk, dict):
+            continue
+        for node_name, update in chunk.items():
+            # Mirror the graph's merge into our local state so we have a
+            # finalized snapshot ready for ReviewStore.save_review when
+            # the stream ends. (LangGraph maintains its own internal copy
+            # — this one is for us.)
+            if isinstance(update, dict):
+                _merge_chunk_into_state(state, update)
+            # Server-side trace of every node completion. Lets us correlate
+            # WS progress envelopes with server-side activity when debugging
+            # "report missing" — if publish_report never appears here, we
+            # know the graph never reached it.
+            update_keys = list(update.keys()) if isinstance(update, dict) else None
+            logger.info("graph node %s done; update keys=%s", node_name, update_keys)
+            event = {
+                "type": "progress",
+                "node": node_name,
+                "status": _classify_progress(node_name, update),
+            }
+            # `validate_request` is the accept/reject branch point — surface
+            # the verdict so the UI can resolve `notify_rejection` (and the
+            # reviewers / aggregate / publish chain) to their final colour
+            # immediately, instead of leaving the wrong side spinning.
+            if node_name == "validate_request" and isinstance(update, dict):
+                verdict = update.get("validation")
+                accepted = getattr(verdict, "accepted", None)
+                if accepted is not None:
+                    event["accepted"] = bool(accepted)
+            app.state.progress_store.append(thread_id, event)
+            await app.state.chat_hub.broadcast(thread_id, event)
+    done = {"type": "progress", "node": "__done__"}
+    app.state.progress_store.append(thread_id, done)
+    await app.state.chat_hub.broadcast(thread_id, done)
+
+
+async def _broadcast_repo_completion(app: FastAPI, thread_id: str) -> None:
+    """Push a short 'review complete' message into the chat with the report URL.
+
+    Skipped when the graph is still paused at an interrupt — in that case the
+    interrupt question is already in chat and the completion notice would
+    confuse the user. Once the human answers the last interrupt, the resume
+    path runs this again on the final pass.
+    """
+    config = {"configurable": {"thread_id": thread_id}}
+    try:
+        snapshot = await app.state.graph.aget_state(config)
+        if snapshot.tasks and any(t.interrupts for t in snapshot.tasks):
+            return
+    except ValueError:
+        # No checkpointer → no persistent task list. Proceed with the
+        # completion broadcast; if a real interrupt fired without a
+        # checkpointer it would have errored earlier anyway.
+        pass
+    msg = ChatMessage(
+        role="agent",
+        text=f"Review complete. Full report: /reports/{thread_id}.md",
+    )
+    app.state.chat_store.append(thread_id, msg)
+    await app.state.chat_hub.broadcast(thread_id, msg.to_dict())
+
+
+async def _has_pending_interrupt(app: FastAPI, thread_id: str) -> bool:
+    config = {"configurable": {"thread_id": thread_id}}
+    try:
+        snapshot = await app.state.graph.aget_state(config)
+    except ValueError:
+        # `aget_state` raises "No checkpointer set" when the graph is
+        # compiled without one (e.g. local demo with empty DATABASE_URL).
+        # Treat that as 'no pending interrupts'.
+        return False
+    return bool(snapshot.tasks and any(t.interrupts for t in snapshot.tasks))
+
+
+async def _broadcast_pending_interrupts(app: FastAPI, thread_id: str) -> None:
+    """Push every pending interrupt's `question` into the chat panel.
+
+    For Phase C `exploit_approval` interrupts we also schedule a default-decline
+    timer; the user has `EXPLOIT_TIMEOUT_SECONDS` to reply before the graph
+    auto-resumes with `decline <finding_id>`.
+    """
+    config = {"configurable": {"thread_id": thread_id}}
+    try:
+        snapshot = await app.state.graph.aget_state(config)
+    except ValueError:
+        # No checkpointer compiled in — interrupts are not persistent and
+        # there's nothing to retrieve. Quietly no-op.
+        return
+    if not snapshot.tasks:
+        return
+    has_exploit_interrupt = False
+    timeout_finding_id = ""
+    for task in snapshot.tasks:
+        for intr in task.interrupts:
+            payload = intr.value if isinstance(intr.value, dict) else {"question": str(intr.value)}
+            question = payload.get("question") or str(payload)
+            # Forward a structured `interrupt` block to the UI when this is
+            # an exploit-approval prompt — the chat renders Approve/Decline
+            # buttons from these fields. Other interrupt kinds (e.g. review
+            # decision) keep going as plain text.
+            interrupt_meta: dict | None = None
+            if isinstance(payload, dict) and payload.get("kind") == "exploit_approval":
+                interrupt_meta = {
+                    "kind": "exploit_approval",
+                    "finding_id": payload.get("finding_id", ""),
+                    "role": payload.get("role", ""),
+                    "severity": payload.get("severity", ""),
+                    # Cycle counter (0-indexed `used`, total `max`) — the UI
+                    # displays "cycle <used+1> of <max>" so the human knows
+                    # how many decisions are left before the budget cap
+                    # auto-skips everything else.
+                    "cycles_used": payload.get("cycles_used", 0),
+                    "cycles_max": payload.get("cycles_max", 0),
+                }
+            msg = ChatMessage(role="agent", text=question, interrupt=interrupt_meta)
+            app.state.chat_store.append(thread_id, msg)
+            await app.state.chat_hub.broadcast(thread_id, msg.to_dict())
+            if interrupt_meta is not None:
+                has_exploit_interrupt = True
+                timeout_finding_id = interrupt_meta["finding_id"] or timeout_finding_id
+
+    if has_exploit_interrupt:
+        _schedule_exploit_timeout(app, thread_id, timeout_finding_id)
+
+
+def _schedule_exploit_timeout(app: FastAPI, thread_id: str, finding_id: str) -> None:
+    """Arm (or re-arm) the default-decline timer for `thread_id`."""
+    existing = _pending_timeouts.pop(thread_id, None)
+    if existing and not existing.done():
+        existing.cancel()
+    decline_text = f"decline {finding_id}".strip()
+    task = asyncio.create_task(_default_decline_after_timeout(app, thread_id, decline_text))
+    _pending_timeouts[thread_id] = task
+
+
+async def _default_decline_after_timeout(app: FastAPI, thread_id: str, decline_text: str) -> None:
+    try:
+        await asyncio.sleep(EXPLOIT_TIMEOUT_SECONDS)
+    except asyncio.CancelledError:
+        # Cancelled by `_cancel_pending_timeout` because the human
+        # answered in time. The cancelling caller already cleaned the
+        # dict entry; nothing else to do here.
+        return
+    try:
+        logger.info("exploit-approval timed out for %s; default-declining", thread_id)
+        msg = ChatMessage(
+            role="system",
+            text=f"No reply in {int(EXPLOIT_TIMEOUT_SECONDS)}s — declining by default.",
+        )
+        app.state.chat_store.append(thread_id, msg)
+        await app.state.chat_hub.broadcast(thread_id, msg.to_dict())
+        await _resume_review(app, thread_id, decline_text)
+    finally:
+        # Self-cleanup: without this, a thread whose user never replied
+        # keeps a completed Task in the global dict forever — slow leak
+        # at scale, plus a stale reference if a fresh review reuses the
+        # same thread_id (UUID collisions are improbable but tests
+        # routinely reuse short ids).
+        # `pop(..., None)` is idempotent if `_schedule_exploit_timeout`
+        # for the same thread overwrote our entry in the meantime.
+        _pending_timeouts.pop(thread_id, None)
+
+
+def _cancel_pending_timeout(thread_id: str) -> None:
+    task = _pending_timeouts.pop(thread_id, None)
+    if task and not task.done():
+        task.cancel()
+
+
+async def _resume_review(app: FastAPI, thread_id: str, user_text: str) -> None:
+    """Feed the user's message back into the paused graph via `Command(resume=...)`.
+
+    After the resume, the graph may either complete (publish_report runs) or
+    hit another interrupt — in which case we broadcast that next question too.
+    Any pending exploit-timeout for this thread is cancelled first so the
+    default-decline timer doesn't fire on top of the user's real reply.
+    """
+    _cancel_pending_timeout(thread_id)
+    config = _trace_config(app, thread_id, state=None, trigger="resume")
+    try:
+        await app.state.graph.ainvoke(Command(resume=user_text), config=config)
+        await _broadcast_pending_interrupts(app, thread_id)
+        # Persist whatever `exploit_proposals` / cycle state the resume
+        # accumulated. Without this the DB row stays at the snapshot
+        # taken right after publish_report — which never had any
+        # exploit decisions yet. Read final state from the checkpointer
+        # since the local accumulator from the initial run is gone.
+        await _persist_state_from_checkpointer(app, thread_id)
+    except Exception as e:
+        logger.error("resume failed for %s: %s", thread_id, e)
+
+
+async def _persist_state_from_checkpointer(app: FastAPI, thread_id: str) -> None:
+    """Reload the graph's current state from the checkpointer and upsert
+    the review row. Called after `_resume_review` so exploit decisions
+    made via chat get persisted to the DB — the local state accumulator
+    from the initial `_run_repo_review` is gone by the time the human
+    types `approve <id>`.
+    """
+    if getattr(app.state, "review_store", None) is None:
+        return
+    try:
+        snapshot = await app.state.graph.aget_state(
+            {"configurable": {"thread_id": thread_id}}
+        )
+    except ValueError:
+        # No checkpointer wired — nothing to read.
+        return
+    values = getattr(snapshot, "values", None)
+    if not values:
+        return
+    # `values` is a dict view of the dataclass state — reconstruct as
+    # ReviewState so the helpers in ReviewStore see the expected shape.
+    reconstructed = ReviewState(**values) if isinstance(values, dict) else values
+    await _persist_review(app, reconstructed)
+
+
+def create_test_app(
+    *,
+    graph,
+    github,
+    store: ChatStore | None = None,
+    hub: ChatHub | None = None,
+    langfuse_callback=None,
+    reports_dir: Path | None = None,
+    progress_store: ProgressStore | None = None,
+) -> FastAPI:
+    """Build a test-mode FastAPI app with pre-injected dependencies.
+
+    Tests construct mocks for `graph` and `github` and pass them here. No
+    lifespan is registered, so settings/validation/Postgres don't activate.
+    `store`, `hub`, `langfuse_callback`, `reports_dir`, and `progress_store`
+    default to disabled/fresh.
+    """
+    app = FastAPI(title="ia-reviewer-test")
+    app.state.graph = graph
+    app.state.github = github
+    app.state.chat_store = store or ChatStore()
+    app.state.chat_hub = hub or ChatHub()
+    app.state.progress_store = progress_store or ProgressStore()
+    app.state.langfuse_callback = langfuse_callback
+    app.state.reports_dir = reports_dir or Path(settings.REPORTS_DIR)
+    _register_routes(app)
+    return app
+
+
+def _build_app() -> FastAPI:
+    """Production app factory. Registers a lifespan that constructs the real
+    GitHubClient, opens a PostgresSaver if DATABASE_URL is set, and compiles
+    the LangGraph review graph against those dependencies."""
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        settings.validate_required()
+        # Add timestamps to uvicorn's own lifecycle/access log lines so they
+        # interleave cleanly with our timestamped app logs.
+        _normalize_uvicorn_logging()
+        github = GitHubClient()
+        reports_dir = Path(settings.REPORTS_DIR)
+        # Pre-create the snapshots dir so the first `git clone` doesn't
+        # race on it; placed inside the project so it's visible under
+        # Docker (mountable via volume) and not lost when /tmp is wiped.
+        Path(settings.SNAPSHOTS_DIR).mkdir(parents=True, exist_ok=True)
+        coordinator = CoordinatorAgent(github=github, reports_dir=reports_dir)
+        async with open_checkpointer(settings.DATABASE_URL) as checkpointer:
+            app.state.graph = build_review_graph(
+                coordinator=coordinator,
+                checkpointer=checkpointer,
+            )
+            app.state.github = github
+            # Bounded in-memory stores — see settings.IN_MEMORY_STORE_MAX_THREADS.
+            # Set to 0 to disable the cap (escape hatch for short-lived
+            # smoke tests that don't care about memory). The setting flows
+            # ONLY to production-built app; `create_test_app` keeps an
+            # unbounded default for back-compat with the test suite.
+            cap = settings.IN_MEMORY_STORE_MAX_THREADS
+            app.state.chat_store = ChatStore(max_threads=cap)
+            app.state.chat_hub = ChatHub()
+            app.state.progress_store = ProgressStore(max_threads=cap)
+            app.state.reports_dir = reports_dir
+            app.state.langfuse_callback = get_langfuse_callback()
+            # Open the ReviewStore against the same Postgres if available.
+            # The checkpointer already proves the DSN is reachable.
+            app.state.review_store = None
+            if settings.DATABASE_URL:
+                try:
+                    app.state.review_store = await ReviewStore.create(settings.DATABASE_URL)
+                    logger.info("ReviewStore connected — persisting reviews to DB")
+                except Exception as e:
+                    logger.warning("ReviewStore disabled (init failed): %s", e)
+            else:
+                logger.info("ReviewStore disabled (DATABASE_URL empty)")
+            if app.state.langfuse_callback is None:
+                logger.info("Langfuse tracing disabled (LANGFUSE_* keys not set)")
+            else:
+                logger.info("Langfuse tracing enabled")
+            try:
+                yield
+            finally:
+                if app.state.review_store is not None:
+                    try:
+                        await app.state.review_store.aclose()
+                    except Exception as e:
+                        logger.warning("ReviewStore aclose failed: %s", e)
+                await github.aclose()
+
+    app = FastAPI(title="ia-reviewer", version="0.1.0", lifespan=lifespan)
+    _register_routes(app)
+    return app
+
+
+app = _build_app()
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(app, host="0.0.0.0", port=8000)

@@ -1,0 +1,6 @@
+diff --git a/src/auth/service.py b/src/auth/service.py
+@@ -1,3 +1,3 @@
+ def login(user, password):
+-    query = f"SELECT * FROM users WHERE name='{user}'"
++    query = "SELECT * FROM users WHERE name=%s"
+     return db.execute(query)

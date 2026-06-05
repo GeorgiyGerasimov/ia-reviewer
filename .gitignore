@@ -1,0 +1,24 @@
+.env
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+*.egg-info/
+.venv/
+venv/
+
+# IDE
+.idea/
+
+# Claude Code local settings
+.claude/settings.local.json
+
+reports/*
+snapshots/*
+
+# macOS Finder metadata — never useful in a repo
+.DS_Store
+**/.DS_Store

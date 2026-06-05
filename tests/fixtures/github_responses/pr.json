@@ -1,0 +1,19 @@
+{
+  "url": "https://api.github.com/repos/octo/myrepo/pulls/42",
+  "html_url": "https://github.com/octo/myrepo/pull/42",
+  "number": 42,
+  "state": "open",
+  "title": "Fix login flow",
+  "user": {
+    "login": "octocat",
+    "id": 1
+  },
+  "head": {
+    "ref": "feature/login",
+    "sha": "abc1234"
+  },
+  "base": {
+    "ref": "main",
+    "sha": "def5678"
+  }
+}

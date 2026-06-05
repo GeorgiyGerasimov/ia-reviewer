@@ -1,0 +1,20 @@
+[
+  {
+    "sha": "abc",
+    "filename": "src/auth/service.py",
+    "status": "modified",
+    "additions": 1,
+    "deletions": 1,
+    "changes": 2,
+    "patch": "@@ -1,3 +1,3 @@\n def login(user, password):\n-    query = f\"SELECT * FROM users WHERE name='{user}'\"\n+    query = \"SELECT * FROM users WHERE name=%s\"\n     return db.execute(query)"
+  },
+  {
+    "sha": "def",
+    "filename": "tests/test_auth.py",
+    "status": "modified",
+    "additions": 2,
+    "deletions": 0,
+    "changes": 2,
+    "patch": "@@ -10,0 +11,2 @@\n+def test_login_uses_parameterized_query():\n+    pass"
+  }
+]
