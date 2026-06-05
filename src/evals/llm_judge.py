@@ -26,6 +26,7 @@ import re
 from dataclasses import dataclass
 
 from src.models.factory import ModelFactory
+from src.utils.config import settings
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -119,7 +120,17 @@ class LLMJudge:
     """
 
     def __init__(self, model_name: str | None = None):
-        self.model_name = model_name or _DEFAULT_MODEL
+        # Resolution order (first non-empty wins):
+        #   1. explicit `model_name=` arg          — tests + pinned A/B
+        #   2. `settings.JUDGE_MODEL` env var      — operator override
+        #   3. built-in default                    — safe fallback
+        # Empty env = "act as if not set" so blank lines in .env don't
+        # accidentally override the constructor arg.
+        self.model_name = (
+            model_name
+            or (settings.JUDGE_MODEL or "")
+            or _DEFAULT_MODEL
+        )
         self.model = ModelFactory.get(self.model_name)
 
     async def evaluate(

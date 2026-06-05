@@ -163,6 +163,19 @@ class Settings(BaseSettings):
     # and the prompt bloat from a long list hurts more than it helps.
     RAG_TOP_K: int = 5
 
+    # ── LLM-as-judge model override ─────────────────────────────────────
+    # The judge (`src/evals/llm_judge.py`) defaults to the same model as
+    # the reviewers. In practice you often want it on a **stronger** model
+    # than the reviewer — the judge runs once per report, so the higher
+    # per-call cost is acceptable, and a smarter judge catches a
+    # weaker reviewer's hallucinations.
+    #
+    # Empty (default) = use LLMJudge's built-in default
+    # (`claude-sonnet-4-6`). Set to any internal model alias supported by
+    # `ModelFactory` (e.g. `claude-opus-4-7`, `gpt-4o`) or directly to a
+    # gateway-served model id when the gateway requires it.
+    JUDGE_MODEL: str = ""
+
     # Langfuse observability (optional — both keys must be set to enable)
     LANGFUSE_PUBLIC_KEY: str = ""
     LANGFUSE_SECRET_KEY: str = ""

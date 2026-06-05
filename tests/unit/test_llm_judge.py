@@ -179,6 +179,59 @@ async def test_evaluate_extracts_json_from_fenced_block(mocker):
     assert verdict.overall_score == 8
 
 
+# ── model-selection precedence ────────────────────────────────────────────────
+
+
+def test_judge_uses_settings_judge_model_when_constructor_arg_omitted(mocker):
+    """When `settings.JUDGE_MODEL` is set and no `model_name=` is passed,
+    the judge requests THAT model from `ModelFactory` — operator can
+    pick a different (stronger) model than the reviewer without code
+    changes."""
+    mocker.patch("src.evals.llm_judge.settings.JUDGE_MODEL", "claude-opus-4-7")
+    factory_get = mocker.patch(
+        "src.models.factory.ModelFactory.get", return_value=mocker.AsyncMock()
+    )
+    from src.models.factory import ModelFactory
+    ModelFactory._instances.clear()
+
+    judge = LLMJudge()
+
+    factory_get.assert_called_once_with("claude-opus-4-7")
+    assert judge.model_name == "claude-opus-4-7"
+
+
+def test_judge_constructor_arg_beats_settings_judge_model(mocker):
+    """Explicit `model_name=` overrides the env-driven default — useful
+    in tests and in callers that pin a specific model for an A/B."""
+    mocker.patch("src.evals.llm_judge.settings.JUDGE_MODEL", "claude-opus-4-7")
+    factory_get = mocker.patch(
+        "src.models.factory.ModelFactory.get", return_value=mocker.AsyncMock()
+    )
+    from src.models.factory import ModelFactory
+    ModelFactory._instances.clear()
+
+    judge = LLMJudge(model_name="gpt-4o")
+
+    factory_get.assert_called_once_with("gpt-4o")
+    assert judge.model_name == "gpt-4o"
+
+
+def test_judge_falls_back_to_builtin_default_when_both_unset(mocker):
+    """No env var, no constructor arg → built-in default
+    (`claude-sonnet-4-6`). Keeps the judge working out of the box."""
+    mocker.patch("src.evals.llm_judge.settings.JUDGE_MODEL", "")
+    factory_get = mocker.patch(
+        "src.models.factory.ModelFactory.get", return_value=mocker.AsyncMock()
+    )
+    from src.models.factory import ModelFactory
+    ModelFactory._instances.clear()
+
+    judge = LLMJudge()
+
+    factory_get.assert_called_once_with("claude-sonnet-4-6")
+    assert judge.model_name == "claude-sonnet-4-6"
+
+
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 
