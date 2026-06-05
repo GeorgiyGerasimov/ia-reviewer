@@ -15,6 +15,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 VALIDATOR_CASES = REPO_ROOT / "benchmarks" / "validator" / "cases.json"
 DEPENDENCY_CASES = REPO_ROOT / "benchmarks" / "dependency" / "cases.json"
 JUDGE_CASES = REPO_ROOT / "benchmarks" / "judge" / "cases.json"
+JUDGE_FORMATTER_CASES = REPO_ROOT / "benchmarks" / "judge_formatter" / "cases.json"
 
 
 # ── validator runner ──────────────────────────────────────────────────────────
@@ -143,6 +144,65 @@ async def test_judge_runner_mock_mode_passes_good_fails_bad():
     )
     assert len(bad_failed_in_mock) >= 3, (
         "mock judge MUST miss most 'bad' calibration reports — that's the calibration gap"
+    )
+
+
+# ── judge-formatter runner (inline gate rubric calibration) ───────────────────
+
+
+async def test_judge_formatter_runner_loads_cases_with_formatter_rubric():
+    """The formatter-rubric calibration set carries 4 formatter-specific
+    criteria (`tldr_only_real_files` etc.) and at least 6 cases — enough
+    to cover every criterion failing in isolation plus a multi-fail."""
+    from benchmarks.run import load_judge_cases
+
+    payload = load_judge_cases(JUDGE_FORMATTER_CASES)
+    cases = payload["cases"]
+    criteria = payload["criteria"]
+    names = {c["name"] for c in criteria}
+    assert {
+        "tldr_only_real_files",
+        "tldr_only_real_cves",
+        "tldr_respects_severity",
+        "tldr_no_invented_findings",
+    } <= names, f"missing formatter-specific criteria; got {names}"
+    assert len(cases) >= 6, (
+        f"judge-formatter calibration set needs ≥6 cases "
+        f"(3 good + 4 per-criterion-failing minimum); got {len(cases)}"
+    )
+    # Every bad case must declare which criterion(criteria) it is
+    # expected to flunk — that's the calibration label.
+    bad_cases = [c for c in cases if c["name"].startswith("bad-")]
+    for case in bad_cases:
+        assert case["expected"]["must_fail_criteria"], (
+            f"bad case '{case['name']}' has no must_fail_criteria — "
+            "without a label the runner can't grade the judge's hit/miss"
+        )
+
+
+async def test_judge_formatter_runner_mock_mode_passes_good_fails_bad():
+    """Mock-mode behaviour parallels the report-rubric judge benchmark:
+    `--mock-llm` returns always-accept. The 3 `good-*` calibration eval-
+    docs must surface as passing; the 5 `bad-*` ones must surface as
+    failing (mock can't catch them — that gap is the value-add of the
+    real judge)."""
+    from benchmarks.run import run_judge_benchmark
+
+    result = await run_judge_benchmark(JUDGE_FORMATTER_CASES, mock_judge=True)
+    good_passed = [
+        d for d in result.details
+        if d["name"].startswith("good-") and d["passed"]
+    ]
+    bad_failed_in_mock = [
+        d for d in result.details
+        if d["name"].startswith("bad-") and not d["passed"]
+    ]
+    assert len(good_passed) >= 2, (
+        "mock judge must classify ≥2 'good' formatter eval-docs as passing"
+    )
+    assert len(bad_failed_in_mock) >= 3, (
+        "mock judge must miss most 'bad' formatter eval-docs — "
+        "that miss-count IS the formatter-rubric calibration gap"
     )
 
 
