@@ -281,4 +281,26 @@ Working end-to-end:
 
 ## License
 
-(none chosen yet)
+[![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/license-PolyForm%20NC%201.0.0-blue)](LICENSE)
+
+Released under the **PolyForm Noncommercial License 1.0.0** — see
+[`LICENSE`](LICENSE) for the full text.
+
+In plain words:
+
+- ✅ **You may**: read, study, fork, modify, redistribute, contribute
+  back, run for personal/hobby/research use, use in education, use in
+  charities/NGOs/government/research institutions.
+- ❌ **You may not**: use the software (or any derivative) for any
+  commercial purpose — selling it, embedding it in a paid product,
+  offering it as a paid SaaS, or using it inside a for-profit business
+  in a way that generates revenue.
+
+PolyForm Noncommercial is a **source-available** license — it does
+**not** meet the OSI definition of "open source" because it forbids
+commercial use. The source is fully open for inspection, learning,
+and non-commercial work.
+
+If you want a commercial license, contact the maintainer.
+
+> Required Notice: Copyright Georgiy Gerasimov (ia-reviewer)

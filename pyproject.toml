@@ -10,6 +10,13 @@ name = "ia-reviewer"
 version = "0.1.0"
 description = "Multi-agent AI code review system for GitHub PRs"
 requires-python = ">=3.11"
+# PolyForm Noncommercial 1.0.0 is a source-available license, NOT an
+# OSI-approved open source license (it forbids commercial use). PyPI's
+# SPDX classifier list doesn't include it, so we declare it as a
+# free-form string + point at the LICENSE file. Hatchling tolerates
+# both forms; SPDX wants `LicenseRef-` prefix for non-standard licenses.
+license = { file = "LICENSE" }
+keywords = ["langgraph", "code-review", "security", "ai-agents", "rag"]
 dependencies = [
     "langgraph>=0.2.0",
     "langchain>=0.3.0",
