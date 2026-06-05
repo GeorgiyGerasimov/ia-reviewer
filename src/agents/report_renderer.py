@@ -149,6 +149,15 @@ class ReportRenderer:
             f"**Overall severity:** {header_severity}",
             "",
         ]
+        # Executive summary blocks — only when there's something to summarise.
+        # Both are derived deterministically from `reviews`; no LLM call,
+        # byte-identical between runs for identical input.
+        breakdown = _render_severity_breakdown(reviews)
+        if breakdown:
+            lines.extend(breakdown)
+        critical_callout = _render_critical_callout(reviews)
+        if critical_callout:
+            lines.extend(critical_callout)
         for r in reviews:
             label = _ROLE_LABELS.get(r.role, r.role)
             lines.append(f"### {label} — {r.severity}")
@@ -156,7 +165,13 @@ class ReportRenderer:
             lines.append(r.summary or "_(no summary)_")
             if r.findings:
                 lines.append("")
-                for f in r.findings:
+                # Sort by severity descending so the worst items land at
+                # the top of every role section. Stable sort preserves
+                # the reviewer's tie-break ordering within a severity.
+                sorted_findings = sorted(
+                    r.findings, key=lambda f: -_SEVERITY_RANK.get(f.get("severity", "info"), 0)
+                )
+                for f in sorted_findings:
                     lines.append(f"- {_format_finding(f)}")
             lines.append("")
 
@@ -313,6 +328,91 @@ def _render_exploit_sibling(ep: ExploitProposal, thread_id: str) -> str:
     parts.append("```")
     parts.append("")
     return "\n".join(parts)
+
+
+def _render_severity_breakdown(reviews: list[AgentReview]) -> list[str]:
+    """Counts table: severity × role, plus a Total column / Total row.
+
+    Returns `[]` (drop the block entirely) when no reviewer produced any
+    findings — empty table is just noise. Otherwise renders a GitHub-
+    flavoured Markdown table with one column per role that actually ran
+    (so single-reviewer runs get a tight 3-column table instead of an
+    awkward 5-column one).
+
+    Counts come straight from the findings list using each finding's
+    `severity` key (defaulting to `"info"` when missing — matches
+    `_format_finding`'s behaviour).
+    """
+    # Per-role per-severity counts. Initialise EVERY severity so 0-counts
+    # render explicitly (`| 0 |`) instead of as blank cells.
+    severities = ("critical", "major", "minor", "info")
+    role_counts: dict[str, dict[str, int]] = {
+        r.role: dict.fromkeys(severities, 0) for r in reviews
+    }
+    for r in reviews:
+        for f in r.findings:
+            sev = f.get("severity", "info")
+            if sev not in severities:
+                sev = "info"
+            role_counts[r.role][sev] += 1
+
+    # Total findings across the whole report — when 0, skip the block.
+    grand_total = sum(sum(row.values()) for row in role_counts.values())
+    if grand_total == 0:
+        return []
+
+    role_order = [r.role for r in reviews]  # deterministic, matches section order
+    role_labels = [_ROLE_LABELS.get(role, role) for role in role_order]
+
+    # Header rows.
+    out: list[str] = ["### Summary", ""]
+    header = "| Severity | " + " | ".join(role_labels) + " | Total |"
+    separator = "|" + "----------|" * (len(role_order) + 2)
+    out.append(header)
+    out.append(separator)
+
+    # Severity rows — capitalised label for human reading.
+    for sev in severities:
+        per_role = [role_counts[role][sev] for role in role_order]
+        row_total = sum(per_role)
+        cells = " | ".join(str(c) for c in per_role)
+        out.append(f"| {sev.capitalize()} | {cells} | {row_total} |")
+
+    # Total row (bold cell text to read as a footer).
+    col_totals = [sum(role_counts[role].values()) for role in role_order]
+    out.append(
+        "| **Total** | "
+        + " | ".join(str(t) for t in col_totals)
+        + f" | **{grand_total}** |"
+    )
+    out.append("")
+    return out
+
+
+def _render_critical_callout(reviews: list[AgentReview]) -> list[str]:
+    """Cross-cutting "### Critical findings (N)" block listing every
+    critical finding flat, with its role tag in front. Drops out
+    entirely when N == 0 so non-critical reports stay clean.
+
+    Order: same role order as the per-role sections below, then each
+    role's stable finding order — predictable, easy to scan.
+    """
+    critical_items: list[tuple[str, dict]] = []
+    for r in reviews:
+        for f in r.findings:
+            if f.get("severity") == "critical":
+                critical_items.append((r.role, f))
+
+    if not critical_items:
+        return []
+
+    out = [f"### Critical findings ({len(critical_items)})", ""]
+    for role, f in critical_items:
+        # `[<role>] <finding>` — role tag is the discriminator a cross-
+        # role list otherwise lacks.
+        out.append(f"- [{role}] {_format_finding(f)}")
+    out.append("")
+    return out
 
 
 def _format_finding(finding: dict) -> str:
