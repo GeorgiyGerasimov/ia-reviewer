@@ -221,6 +221,20 @@ def list_repo_files(snapshot_dir: Path) -> list[RepoFile]:
     snapshot_dir = Path(snapshot_dir)
     files: list[RepoFile] = []
     for path in snapshot_dir.rglob("*"):
+        # SECURITY: skip symlinks entirely, regardless of where they
+        # point. Without this, a malicious repo containing a symlink
+        # to a host file (e.g. `/etc/shadow`, `~/.ssh/id_rsa`, the
+        # host's `.env`) would be enumerated by `list_repo_files`,
+        # read by downstream reviewers, and shipped as `file_contents`
+        # to the LLM gateway — a host-secret exfiltration path.
+        #
+        # `is_symlink()` does NOT follow the link (unlike `is_file()`
+        # and `stat()` which do), so this check is the right guard.
+        # Surfaced by Qwen3.6-27B self-review (2026-06-06); see
+        # docs/observed-quality-cases/symlink-leak-anatomy.md for the
+        # full attack walkthrough.
+        if path.is_symlink():
+            continue
         if not path.is_file():
             continue
         rel_parts = path.relative_to(snapshot_dir).parts
