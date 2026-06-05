@@ -7,25 +7,28 @@ from src.agents.dependency import DependencyReviewer
 from src.agents.exploit_proposal import ExploitProposalAgent, route_after_proposal
 from src.agents.injection import InjectionReviewer
 from src.agents.owasp import OWASPTop10Reviewer
+from src.agents.past_context import PastContextAgent
 from src.agents.review_decision import ReviewDecisionAgent
 from src.agents.validator import RequestValidator
 from src.graph.state import ReviewState
+from src.utils.node_timing import timed_node
 
 _SECURITY_NODES = ("dependency_review", "injection_review", "owasp_review")
 
 
-def route_after_validation(state: ReviewState) -> list[str] | str:
+def route_after_validation(state: ReviewState) -> str:
     """Conditional-edge router after `validate_request`.
 
-    - `accepted=True`  → fan out to all three security reviewers (LangGraph
-      treats a list of node names as a parallel fan-out).
+    - `accepted=True`  → `retrieve_past_context` (RAG step). That node
+      itself hands off to all three security reviewers in parallel via a
+      static edge, so the fan-out point moved one hop down the graph.
     - `accepted=False` → `notify_rejection`.
     - `validation is None` (safety net for a partially-implemented validator)
       → `notify_rejection`.
     """
     if state.validation is None or not state.validation.accepted:
         return "notify_rejection"
-    return list(_SECURITY_NODES)
+    return "retrieve_past_context"
 
 
 def route_after_decision(state: ReviewState) -> list[str] | str:
@@ -48,6 +51,7 @@ def build_review_graph(
     injection: InjectionReviewer | None = None,
     owasp: OWASPTop10Reviewer | None = None,
     exploit_proposal: ExploitProposalAgent | None = None,
+    past_context: PastContextAgent | None = None,
     *,
     checkpointer: BaseCheckpointSaver | None = None,
     github=None,
@@ -96,32 +100,48 @@ def build_review_graph(
     exploit_proposal = exploit_proposal or ExploitProposalAgent(
         interrupts_enabled=interrupts_enabled,
     )
+    # `PastContextAgent` is always added to the graph — when its embedder
+    # or store is None, `run()` short-circuits to an empty update. Keeps
+    # the topology stable across "RAG configured" / "RAG disabled" setups.
+    past_context = past_context or PastContextAgent()
 
     graph = StateGraph(ReviewState)
-    graph.add_node("validate_request", validator.run)
-    graph.add_node("notify_rejection", coordinator.notify_rejection)
-    graph.add_node("dependency_review", dependency.run)
-    graph.add_node("injection_review", injection.run)
-    graph.add_node("owasp_review", owasp.run)
-    graph.add_node("review_decision", review_decision.run)
-    graph.add_node("aggregate_results", coordinator.aggregate)
-    graph.add_node("process_proposal", exploit_proposal.run)
-    graph.add_node("publish_report", coordinator.publish)
+    # Every node is wrapped in `timed_node(...)` so wall-clock durations
+    # land in the structured app log (`graph.timing` logger) on the same
+    # line shape:
+    #   node_complete node=<n> thread_id=<id> duration_ms=<N> status=ok|error
+    # See `docs/performance-and-cost.md` for the parsing recipes.
+    graph.add_node("validate_request", timed_node("validate_request")(validator.run))
+    graph.add_node("notify_rejection", timed_node("notify_rejection")(coordinator.notify_rejection))
+    graph.add_node("retrieve_past_context", timed_node("retrieve_past_context")(past_context.run))
+    graph.add_node("dependency_review", timed_node("dependency_review")(dependency.run))
+    graph.add_node("injection_review", timed_node("injection_review")(injection.run))
+    graph.add_node("owasp_review", timed_node("owasp_review")(owasp.run))
+    graph.add_node("review_decision", timed_node("review_decision")(review_decision.run))
+    graph.add_node("aggregate_results", timed_node("aggregate_results")(coordinator.aggregate))
+    graph.add_node("process_proposal", timed_node("process_proposal")(exploit_proposal.run))
+    graph.add_node("publish_report", timed_node("publish_report")(coordinator.publish))
     # Re-render the main `.md` once the exploit loop has populated
     # state.exploit_proposals, and write sibling `<tid>.exploit.<fid>.md`
     # files for every save_mode="file" approved entry. publish_report wrote
     # a pre-exploit snapshot of the report so it's durable even if the
     # user never answers the chat prompts; this node updates it once the
     # answers (or timeouts) have all landed.
-    graph.add_node("finalize_report", coordinator.finalize_exploits)
+    graph.add_node("finalize_report", timed_node("finalize_report")(coordinator.finalize_exploits))
 
     graph.add_edge(START, "validate_request")
     graph.add_conditional_edges(
         "validate_request",
         route_after_validation,
-        [*_SECURITY_NODES, "notify_rejection"],
+        ["retrieve_past_context", "notify_rejection"],
     )
     graph.add_edge("notify_rejection", END)
+
+    # retrieve_past_context fans out to the three security reviewers in parallel.
+    # The reviewers' `_build_context` reads `state.past_findings_by_role` that
+    # this node just populated (or left empty when RAG is disabled).
+    for node in _SECURITY_NODES:
+        graph.add_edge("retrieve_past_context", node)
 
     for node in _SECURITY_NODES:
         graph.add_edge(node, "review_decision")

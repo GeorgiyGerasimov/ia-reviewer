@@ -84,6 +84,40 @@ WHERE thread_id = $1
 ORDER BY id
 """
 
+# RAG retrieval: top-k past findings on the same target_url for the same role,
+# ordered by cosine distance from the query embedding. Rows without an
+# embedding (un-backfilled) are excluded — they're invisible until embed_pending
+# fills them in.
+_RETRIEVE_SIMILAR_SQL = """
+SELECT
+    rf.id, rf.thread_id, rf.role, rf.file, rf.line,
+    rf.category, rf.severity, rf.issue,
+    (rf.embedding <=> $3::vector) AS distance
+FROM review_findings rf
+JOIN reviews r ON r.thread_id = rf.thread_id
+WHERE r.target_url = $1
+  AND rf.role = $2
+  AND rf.embedding IS NOT NULL
+ORDER BY rf.embedding <=> $3::vector
+LIMIT $4
+"""
+
+# Backfill: pull rows that don't have an embedding yet, in stable id order.
+# We only need the columns that feed the canonical embed-text.
+_SELECT_PENDING_EMBEDDINGS_SQL = """
+SELECT id, role, file, category, issue
+FROM review_findings
+WHERE embedding IS NULL
+ORDER BY id
+LIMIT $1
+"""
+
+_UPDATE_EMBEDDING_SQL = """
+UPDATE review_findings
+SET embedding = $1::vector
+WHERE id = $2
+"""
+
 
 @dataclass
 class ReviewStore:
@@ -165,6 +199,70 @@ class ReviewStore:
                 return None
             findings = await conn.fetch(_GET_FINDINGS_SQL, thread_id)
         return {**dict(row), "findings": [dict(f) for f in findings]}
+
+    # ── RAG: similarity retrieval over past findings ──────────────────────
+
+    async def retrieve_similar(
+        self,
+        *,
+        target_url: str,
+        role: str,
+        query_embedding: list[float] | None,
+        k: int = 5,
+    ) -> list[dict]:
+        """Return top-k past findings on the same `target_url` for the same
+        `role`, ordered by cosine distance from `query_embedding` ascending.
+
+        Returns `[]` (with no SQL roundtrip) when the embedder couldn't
+        produce a vector (`query_embedding` is None or empty) or `k <= 0`.
+        Rows whose `embedding IS NULL` (not yet backfilled by `embed_pending`)
+        are excluded from the result.
+
+        Each row is a dict with: id, thread_id, role, file, line, category,
+        severity, issue, distance.
+        """
+        if not query_embedding or k <= 0:
+            return []
+        vector_str = _format_vector(query_embedding)
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                _RETRIEVE_SIMILAR_SQL, target_url, role, vector_str, k
+            )
+        return [dict(r) for r in rows]
+
+    async def embed_pending(
+        self, embedder, *, batch_size: int = 100
+    ) -> int:
+        """Backfill embeddings for `review_findings` rows where it's still NULL.
+
+        Pulls up to `batch_size` rows in stable id order, builds the canonical
+        embed-text from each, and UPDATEs with the resulting vector. Stops on
+        the first embedder failure (`embed` returns None) so a misbehaving
+        gateway doesn't burn through the entire backlog without writing
+        anything useful. Returns the number of rows successfully embedded.
+
+        Rows whose canonical text is empty (no issue / category / file) are
+        skipped without invoking the embedder — they'd produce a useless
+        zero-information vector.
+        """
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(_SELECT_PENDING_EMBEDDINGS_SQL, batch_size)
+            if not rows:
+                return 0
+
+            count = 0
+            for r in rows:
+                text = _canonical_finding_text(dict(r))
+                if not text:
+                    continue
+                vector = await embedder.embed(text)
+                if vector is None:
+                    # Embedder failure — stop. Caller can retry on next backfill cycle.
+                    break
+                vector_str = _format_vector(vector)
+                await conn.execute(_UPDATE_EMBEDDING_SQL, vector_str, r["id"])
+                count += 1
+            return count
 
 
 # ── pure helpers (tested via save_review's SQL assertions) ─────────────
@@ -275,3 +373,38 @@ def _overall_severity(reviews: list[AgentReview]) -> str:
 def _normalize_severity(raw: str) -> str:
     s = (raw or "").strip().lower()
     return s if s in _SEVERITY_RANK else "info"
+
+
+def _format_vector(values: list[float]) -> str:
+    """Serialise a list[float] into the pgvector wire format `'[a,b,c]'`.
+
+    asyncpg has no codec for the `vector` type, so we hand Postgres a
+    plain string and use `$N::vector` in the SQL to cast it. Format with
+    enough precision to round-trip a typical embedding without rounding
+    the cosine distance into noise (~7 digits is plenty for normalised
+    sentence embeddings).
+    """
+    return "[" + ",".join(f"{float(v):.8g}" for v in values) + "]"
+
+
+def _canonical_finding_text(row: dict) -> str:
+    """Build the embed-text for a single review_findings row.
+
+    Stable concatenation so the same finding round-trips to the same
+    embedding regardless of which model serves the request — the model
+    sees `role file category issue` in that order.
+
+    Returns "" when none of the **content** fields (`file`, `category`,
+    `issue`) carry information. `role` alone is a taxonomy label, not
+    finding content — an embedding of just "injection" carries no signal
+    and would pollute the retrieval index.
+    """
+    has_content = any((row.get(k) or "").strip() for k in ("file", "category", "issue"))
+    if not has_content:
+        return ""
+    parts: list[str] = []
+    for key in ("role", "file", "category", "issue"):
+        value = row.get(key)
+        if value:
+            parts.append(str(value).strip())
+    return " — ".join(p for p in parts if p).strip()

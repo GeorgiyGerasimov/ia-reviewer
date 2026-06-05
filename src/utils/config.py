@@ -12,11 +12,13 @@ REQUIRED_SETTINGS = ("ANTHROPIC_API_KEY",)
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
-    # AI Gateway — any OpenAI-compatible endpoint. Default points at the
-    # local model server on the corp LAN; override with a Bifrost / LiteLLM
-    # proxy or a public provider as needed.
+    # AI Gateway — any OpenAI-compatible endpoint. The default assumes a
+    # local serving box on `localhost:8001`. Real deployments override
+    # via the gitignored `.env` (e.g. a corp-LAN gateway, Bifrost /
+    # LiteLLM proxy, or a public provider). The class default stays
+    # sanitised so this file can live in a public repository.
     USE_AI_GATEWAY: bool = True
-    AI_GATEWAY_URL: str = "http://10.30.1.14:8001/v1"
+    AI_GATEWAY_URL: str = "http://localhost:8001/v1"
     AI_GATEWAY_API_KEY: str = ""
     # Pin a specific model name on the gateway. When empty, ModelFactory
     # auto-discovers by GETing /v1/models and using the first id; failing
@@ -140,6 +142,26 @@ class Settings(BaseSettings):
         "http://localhost:8000",
         "http://127.0.0.1:8000",
     ]
+
+    # ── RAG: retrieval over past findings (optional, fail-soft) ──────────
+    # EMBEDDING_MODEL is the master switch: empty = RAG disabled, no
+    # EmbeddingsClient is built, no retrieval is attempted. When set, the
+    # app expects the gateway to expose /embeddings serving this model.
+    EMBEDDING_MODEL: str = ""
+    # Dim of the pgvector column `review_findings.embedding`. Changing
+    # this requires recreating the column + index — do NOT flip on a
+    # live database. 1024 is the BGE-large / multilingual-e5-large default.
+    EMBEDDING_DIM: int = 1024
+    # Where the embeddings endpoint lives. Empty = reuse AI_GATEWAY_URL.
+    # Different value useful when chat goes to one box and embeddings to
+    # a dedicated embeddings server.
+    EMBEDDING_API_URL: str = ""
+    # Auth for the embeddings endpoint. Empty = reuse AI_GATEWAY_API_KEY.
+    EMBEDDING_API_KEY: str = ""
+    # How many past findings per role to splice into a reviewer's prompt.
+    # Low number on purpose — quality of recall matters more than quantity,
+    # and the prompt bloat from a long list hurts more than it helps.
+    RAG_TOP_K: int = 5
 
     # Langfuse observability (optional — both keys must be set to enable)
     LANGFUSE_PUBLIC_KEY: str = ""

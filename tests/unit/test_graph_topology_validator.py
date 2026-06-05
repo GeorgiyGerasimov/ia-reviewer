@@ -38,14 +38,18 @@ def test_start_edge_goes_only_to_validator():
     )
 
 
-def test_validator_has_conditional_route_to_reviewers_and_rejection():
-    """`validate_request` must reach both the security reviewers (accept path)
-    and notify_rejection (reject path) via a conditional edge."""
+def test_validator_has_conditional_route_to_retrieve_and_rejection():
+    """`validate_request` reaches `retrieve_past_context` (accept path —
+    the RAG step now sits between the validator and the reviewers) and
+    `notify_rejection` (reject path) via a conditional edge.
+
+    Reviewers themselves are NOT direct successors of `validate_request`
+    any more — that's tested in `test_graph_topology_rag.py`."""
     graph = build_review_graph()
     validator_successors = {
         edge.target for edge in graph.get_graph().edges if edge.source == "validate_request"
     }
-    expected = {"dependency_review", "injection_review", "owasp_review", "notify_rejection"}
+    expected = {"retrieve_past_context", "notify_rejection"}
     assert expected.issubset(validator_successors), (
         f"validate_request should reach {expected}; got {validator_successors}"
     )

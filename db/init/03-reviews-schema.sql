@@ -45,3 +45,21 @@ CREATE TABLE IF NOT EXISTS review_findings (
 
 CREATE INDEX IF NOT EXISTS idx_findings_thread ON review_findings (thread_id);
 CREATE INDEX IF NOT EXISTS idx_reviews_created ON reviews (created_at DESC);
+
+-- RAG: per-finding embeddings for retrieving similar past findings on
+-- the same repo. Dim 1024 matches common self-hosted gateway models
+-- (BGE-large, multilingual-e5-large). Changing the dim requires a
+-- new column + index + a backfill — keep it stable.
+--
+-- `pgvector` extension is enabled by `01-extensions.sql`; this ALTER is
+-- a no-op when the column already exists, so `ReviewStore.ensure_schema`
+-- can replay it on every app start.
+ALTER TABLE review_findings
+    ADD COLUMN IF NOT EXISTS embedding vector(1024);
+
+-- ivfflat with cosine ops gives sub-linear similarity search at
+-- reasonable recall. `lists=100` is a sensible default up to ~1M rows;
+-- past that, recreate the index with `lists = sqrt(rows)`.
+CREATE INDEX IF NOT EXISTS idx_findings_embedding
+    ON review_findings
+    USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);

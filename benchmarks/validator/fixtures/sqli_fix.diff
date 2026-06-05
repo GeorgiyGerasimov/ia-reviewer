@@ -1,0 +1,17 @@
+diff --git a/src/auth/login.py b/src/auth/login.py
+@@ -10,8 +10,9 @@ def login(username, password):
+     # SQL injection fix — switch to parameterized query
+-    query = f"SELECT * FROM users WHERE name='{username}' AND password='{password}'"
+-    result = db.execute(query)
++    query = "SELECT * FROM users WHERE name=%s AND password=%s"
++    result = db.execute(query, (username, password))
+     if result:
+         return result.fetchone()
+     return None
+diff --git a/tests/test_login.py b/tests/test_login.py
+@@ -1,0 +1,8 @@
++def test_login_resists_injection():
++    """Ensure single-quote escape in username is parameterised."""
++    user = "alice' OR '1'='1"
++    result = login(user, "anything")
++    assert result is None

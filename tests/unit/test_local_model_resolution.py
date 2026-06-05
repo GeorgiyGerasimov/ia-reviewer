@@ -35,13 +35,13 @@ def test_settings_ai_gateway_url_default_points_to_local_box():
     from src.utils.config import Settings
 
     s = Settings(_env_file=None)
-    assert s.AI_GATEWAY_URL == "http://10.30.1.14:8001/v1"
+    assert s.AI_GATEWAY_URL == "http://localhost:8001/v1"
 
 
 def test_resolve_uses_explicit_ai_gateway_model_when_set(mocker):
     mocker.patch.object(factory, "settings", autospec=False)
     factory.settings.AI_GATEWAY_MODEL = "Qwen/Qwen2.5-Coder-32B-Instruct"
-    factory.settings.AI_GATEWAY_URL = "http://10.30.1.14:8001/v1"
+    factory.settings.AI_GATEWAY_URL = "http://localhost:8001/v1"
 
     resolved = factory._resolve_gateway_model("claude-sonnet-4-6")
 
@@ -53,9 +53,9 @@ def test_resolve_uses_explicit_ai_gateway_model_when_set(mocker):
 def test_resolve_discovers_first_model_from_endpoint(mocker):
     mocker.patch.object(factory, "settings", autospec=False)
     factory.settings.AI_GATEWAY_MODEL = ""
-    factory.settings.AI_GATEWAY_URL = "http://10.30.1.14:8001/v1"
+    factory.settings.AI_GATEWAY_URL = "http://localhost:8001/v1"
 
-    respx.get("http://10.30.1.14:8001/v1/models").mock(
+    respx.get("http://localhost:8001/v1/models").mock(
         return_value=httpx.Response(
             200,
             json={
@@ -76,9 +76,9 @@ def test_resolve_discovers_first_model_from_endpoint(mocker):
 def test_resolve_falls_back_to_prefix_mapping_when_discovery_fails(mocker):
     mocker.patch.object(factory, "settings", autospec=False)
     factory.settings.AI_GATEWAY_MODEL = ""
-    factory.settings.AI_GATEWAY_URL = "http://10.30.1.14:8001/v1"
+    factory.settings.AI_GATEWAY_URL = "http://localhost:8001/v1"
 
-    respx.get("http://10.30.1.14:8001/v1/models").mock(
+    respx.get("http://localhost:8001/v1/models").mock(
         side_effect=httpx.ConnectError("connection refused")
     )
 
@@ -92,9 +92,9 @@ def test_resolve_falls_back_to_prefix_mapping_when_discovery_fails(mocker):
 def test_resolve_caches_discovery_result_across_calls(mocker):
     mocker.patch.object(factory, "settings", autospec=False)
     factory.settings.AI_GATEWAY_MODEL = ""
-    factory.settings.AI_GATEWAY_URL = "http://10.30.1.14:8001/v1"
+    factory.settings.AI_GATEWAY_URL = "http://localhost:8001/v1"
 
-    route = respx.get("http://10.30.1.14:8001/v1/models").mock(
+    route = respx.get("http://localhost:8001/v1/models").mock(
         return_value=httpx.Response(
             200, json={"object": "list", "data": [{"id": "Qwen/Qwen2.5-7B", "object": "model"}]}
         )

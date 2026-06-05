@@ -1,0 +1,52 @@
+{
+  "$schema": "Each case: {name, fixture, criteria: [{name, description}], expected: {passed, must_fail_criteria: [...]}}. Runner: loads the report markdown, asks LLMJudge to score against the criteria, compares against expected. `must_fail_criteria` is a list of criterion-names that the judge MUST mark `met=false` — covers cases where we know specific failures must surface.",
+  "criteria": [
+    {"name": "has_overall_severity", "description": "Report contains a line of the form '**Overall severity:** <bucket>' near the top."},
+    {"name": "mentions_all_roles", "description": "All three reviewer sections are present with H3 headers: '### Dependencies', '### Injection', '### OWASP Top 10'."},
+    {"name": "no_fake_cve_format", "description": "Any CVE id mentioned uses the canonical CVE-YYYY-NNNN format (4-digit year + 4-7 digit serial). Placeholder shapes like 'CVE-XXXX-XXXX' are NOT acceptable."},
+    {"name": "exploit_has_disclaimer", "description": "If an 'Exploit proposals' section exists, it MUST open with a 'Defensive use only' disclaimer that warns against targeting third-party systems and includes the words 'isolated environment' or 'own code'. If no exploit section exists, this criterion is automatically met."},
+    {"name": "no_raw_json_in_body", "description": "Each reviewer section's body is prose or Markdown bullets. Raw `{...}` JSON dumps in section bodies are NOT acceptable — JSON is for tool output, not for the human-facing report."}
+  ],
+  "cases": [
+    {
+      "name": "good-clean-report",
+      "fixture": "good_clean_report.md",
+      "expected": {"passed": true, "must_fail_criteria": []}
+    },
+    {
+      "name": "good-with-exploit",
+      "fixture": "good_with_exploit.md",
+      "expected": {"passed": true, "must_fail_criteria": []}
+    },
+    {
+      "name": "good-no-findings",
+      "fixture": "good_no_findings.md",
+      "expected": {"passed": true, "must_fail_criteria": []}
+    },
+    {
+      "name": "bad-missing-owasp-role",
+      "fixture": "bad_missing_role.md",
+      "expected": {"passed": false, "must_fail_criteria": ["mentions_all_roles"]}
+    },
+    {
+      "name": "bad-placeholder-cve",
+      "fixture": "bad_fake_cve.md",
+      "expected": {"passed": false, "must_fail_criteria": ["no_fake_cve_format"]}
+    },
+    {
+      "name": "bad-exploit-without-disclaimer-and-targeting-third-party",
+      "fixture": "bad_missing_disclaimer.md",
+      "expected": {"passed": false, "must_fail_criteria": ["exploit_has_disclaimer"]}
+    },
+    {
+      "name": "bad-no-overall-severity",
+      "fixture": "bad_no_overall_severity.md",
+      "expected": {"passed": false, "must_fail_criteria": ["has_overall_severity"]}
+    },
+    {
+      "name": "bad-raw-json-in-sections",
+      "fixture": "bad_raw_json.md",
+      "expected": {"passed": false, "must_fail_criteria": ["no_raw_json_in_body"]}
+    }
+  ]
+}

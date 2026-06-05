@@ -4,6 +4,34 @@ All runtime configuration is loaded by `pydantic-settings` from
 [`.env`](../.env.example) (or the process environment, which takes
 precedence). Defaults live in [`src/utils/config.py`](../src/utils/config.py).
 
+### Local overrides via `.env` (the public-repo workflow)
+
+This repository is intended to be safe to publish as a public mirror,
+so all defaults in `.env.example` and `src/utils/config.py` point at
+sanitised, generic values (`localhost`, placeholder API keys, dev
+secrets marked `🔐 REPLACE-BEFORE-PROD`). Your real, environment-
+specific values — internal IPs, real API keys, corp-LAN gateway
+URLs — go into your **local `.env` file**, which is `.gitignore`d and
+never reaches GitHub.
+
+The precedence order (highest → lowest):
+
+1. Process environment variables (`AI_GATEWAY_URL=… python main.py`).
+2. The local `.env` file at the project root (gitignored).
+3. The class default in `src/utils/config.py`.
+
+So you can keep developing against your real gateway by editing
+`.env`:
+
+```bash
+# .env (gitignored)
+AI_GATEWAY_URL=http://10.30.1.14:8006/v1   # your actual box
+AI_GATEWAY_MODEL=Qwen/Qwen2.5-Coder-32B-Instruct
+```
+
+and `git status` will still show nothing — only the sanitised template
+ever lives in git history.
+
 ## Required
 
 | Variable | Required when | Notes |
@@ -40,7 +68,7 @@ So the same agent code works against:
 Discover what your gateway exposes:
 
 ```bash
-curl -s http://10.30.1.14:8001/v1/models | jq '.data[].id'
+curl -s "$AI_GATEWAY_URL/models" | jq '.data[].id'
 ```
 
 ### Gateway settings
@@ -48,7 +76,7 @@ curl -s http://10.30.1.14:8001/v1/models | jq '.data[].id'
 | Variable | Default | Purpose |
 |---|---|---|
 | `USE_AI_GATEWAY` | `true` | Route through `AI_GATEWAY_URL` instead of calling provider SDKs. |
-| `AI_GATEWAY_URL` | `http://10.30.1.14:8001/v1` | OpenAI-compatible base URL. |
+| `AI_GATEWAY_URL` | `http://localhost:8001/v1` | OpenAI-compatible base URL. The default assumes a local serving box; real deployments override via the gitignored `.env`. |
 | `AI_GATEWAY_API_KEY` | _(empty)_ | Optional bearer key. Omitted if empty. |
 | `AI_GATEWAY_MODEL` | _(empty)_ | Pin a specific model id; bypasses auto-discovery. |
 
@@ -133,12 +161,12 @@ see [observability.md](observability.md).
 
 ## Putting it together
 
-A minimal working `.env` for a local public-repo demo on the corp LAN
-LLM gateway:
+A minimal working `.env` for a local public-repo demo against an
+OpenAI-compatible gateway:
 
 ```bash
 USE_AI_GATEWAY=true
-AI_GATEWAY_URL=http://10.30.1.14:8006/v1
+AI_GATEWAY_URL=http://localhost:8001/v1   # or your real gateway endpoint
 AI_GATEWAY_API_KEY=
 AI_GATEWAY_MODEL=
 

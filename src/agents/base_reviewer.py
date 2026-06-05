@@ -171,7 +171,8 @@ class BaseReviewer:
         )
 
     def _build_context(self, state: ReviewState) -> str:
-        """PR-mode context: diff + metadata + optional extra_context."""
+        """PR-mode context: diff + metadata + optional past-findings splice
+        + optional human-clarification."""
         req = state.request
         parts = [
             f"PR: {req.pr_url}",
@@ -180,6 +181,10 @@ class BaseReviewer:
             "",
             f"Diff:\n{req.diff}",
         ]
+        past_block = self._render_past_findings(state)
+        if past_block:
+            parts.append("")
+            parts.append(past_block)
         if state.extra_context:
             # Phase B — splice in the human's clarification from the previous
             # pass so the reviewer's second look has the missing context.
@@ -188,7 +193,8 @@ class BaseReviewer:
         return "\n".join(parts)
 
     def _build_repo_file_context(self, state: ReviewState, repo_file: RepoFile, content: str) -> str:
-        """Repo-mode per-file context: single file's full content + metadata."""
+        """Repo-mode per-file context: single file's full content + metadata
+        + optional past-findings splice + optional human-clarification."""
         req = state.request
         parts = [
             f"Repository: {req.repo_url}@{req.ref}",
@@ -196,10 +202,44 @@ class BaseReviewer:
             "",
             f"Content:\n{content}",
         ]
+        past_block = self._render_past_findings(state)
+        if past_block:
+            parts.append("")
+            parts.append(past_block)
         if state.extra_context:
             parts.append("")
             parts.append(f"Human clarification from previous pass:\n{state.extra_context}")
         return "\n".join(parts)
+
+    def _render_past_findings(self, state: ReviewState) -> str:
+        """RAG splice — render this reviewer's slice of past findings.
+
+        Returns "" when there's nothing to show (no RAG, no past
+        findings for this role) so the caller can omit the block
+        without noise in the prompt. Each past finding is one bullet
+        line carrying severity + file location + issue text — enough
+        for the model to recognise a duplicate/regression without
+        bloating the prompt.
+
+        Called from both PR-mode and repo-mode context builders.
+        """
+        by_role = state.past_findings_by_role or {}
+        my_past = by_role.get(self.role) or []
+        if not my_past:
+            return ""
+
+        lines = ["Previous findings on this repo (for context — they may already be fixed or unfixed):"]
+        for finding in my_past:
+            location = (finding.get("file") or "").strip()
+            if location and finding.get("line"):
+                location = f"{location}:{finding['line']}"
+            severity = finding.get("severity") or "info"
+            category = finding.get("category") or ""
+            issue = (finding.get("issue") or "").strip() or "(no description)"
+            head_parts = [p for p in (location, category, f"[{severity}]") if p]
+            head = " — ".join(head_parts)
+            lines.append(f"- {head} {issue}".rstrip())
+        return "\n".join(lines)
 
     def _parse_response(self, content: str) -> dict:
         match = _JSON_BLOCK_RE.search(content)

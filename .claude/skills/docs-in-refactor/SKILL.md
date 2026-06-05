@@ -19,7 +19,7 @@ When a refactor removes a feature, changes architecture, renames a module, or ch
 
 ## Why
 
-Stale docs mislead future contributors and erode trust in everything else the docs claim. The lesson came from the parent project (`ms-ia-bot`) where README still mentioned Confluence after it had been removed — the cleanup wasn't part of the refactor commit.
+Stale docs mislead future contributors and erode trust in everything else the docs claim. The lesson came from a previous project where README still mentioned Confluence after the integration had been removed — the cleanup wasn't part of the refactor commit.
 
 ## How to apply
 

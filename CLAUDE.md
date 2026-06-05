@@ -13,7 +13,7 @@ Three specialists:
 - **Injection** — SQLi, command, template, deserialization, path traversal, XSS
 - **OWASP Top 10** — broader sweep covering A01/A02/A04/A05/A07/A08/A09/A10 (A03 and A06 are delegated to the specialists above)
 
-This project is modeled after `ms-ia-bot` (GitLab + Slack), but targets **GitHub only**, has **no Slack integration**, and is **security-focused** — there is no architecture / mobile / web / backend specialization.
+Architecturally borrows the parallel-reviewers + coordinator pattern from a sibling code-review tool that targeted GitLab + Slack, but ia-reviewer targets **GitHub only**, has **no Slack integration**, and is **security-focused** — there is no architecture / mobile / web / backend specialization.
 
 Key files:
 - `src/graph/state.py` — `ReviewState`, `ReviewRequest` (discriminated by `mode: "pr" | "repo"`), `RepoFile`, `AgentReview` dataclasses. `agent_reviews` uses an `add` reducer so the three security agents can write concurrently. `ReviewState.thread_id` is stamped before invocation so repo-mode publish can write `reports/<thread_id>.md`.
@@ -40,6 +40,30 @@ Key files:
 - `docker-compose.yml` — `app` + `postgres` (pgvector/pgvector:pg16)
 - `db/init/*.sql` — runs once on first Postgres boot; enables the `vector` extension
 
+## RAG — retrieval over past findings
+
+A `retrieve_past_context` node fans into the three reviewers from `validate_request`'s accept branch. It embeds a query derived from the incoming `ReviewRequest` (`pr_url + author + files_changed` in PR-mode; `repo_url + ref + repo_files` in repo-mode) via [`src/integrations/embedder.py`](src/integrations/embedder.py), then calls `ReviewStore.retrieve_similar(target_url, role, query_embedding, k=RAG_TOP_K)` once per role in `state.request.scope` (or all three roles when scope is empty). The result lands in `state.past_findings_by_role: dict[str, list[dict]]` (no reducer — single writer, last write wins).
+
+Each reviewer's `_build_context` / `_build_repo_file_context` reads its own role slice from `state.past_findings_by_role` and renders a "Previous findings on this repo" block into the LLM prompt — one bullet per past finding with severity + file location + issue text. Different roles never see each other's slices: `InjectionReviewer` never sees `dependency`'s past findings.
+
+**Storage.** Embeddings live in `review_findings.embedding vector(EMBEDDING_DIM)` with an `ivfflat (vector_cosine_ops)` index. The schema migration in `db/init/03-reviews-schema.sql` is replayed idempotently by `ReviewStore.ensure_schema()` at app startup. **Changing `EMBEDDING_DIM` after the first run is a destructive op** — the column must be dropped + recreated + all rows backfilled. Pin it.
+
+**Backfill.** After every `save_review(state)`, `main._persist_review` calls `store.embed_pending(embedder)` in the same async task. It scans for `review_findings.embedding IS NULL`, embeds each row's `role — file — category — issue` text, and UPDATEs the vector in. Stops on the first embedder failure so a misbehaving gateway doesn't burn through the backlog without writing anything useful.
+
+**Fail-soft contract.** RAG never blocks a review. Every degraded state below collapses to "no past context spliced this run":
+- `EMBEDDING_MODEL=""` → no embedder built in lifespan; `PastContextAgent.run` short-circuits.
+- `DATABASE_URL=""` or `ReviewStore.create` failed → `store=None`; same short-circuit.
+- Gateway has no `/embeddings` endpoint, network error, dim mismatch, malformed JSON → `Embedder.embed` returns `None`; agent skips retrieval.
+- Per-role `retrieve_similar` raises → caught and converted to an empty list for that role only; other roles still get their slice.
+
+**Config.** Five env vars in [`.env.example`](.env.example):
+- `EMBEDDING_MODEL` — master switch (empty = disabled).
+- `EMBEDDING_DIM` — must match the model (default 1024 for BGE-large / multilingual-e5-large).
+- `EMBEDDING_API_URL` / `EMBEDDING_API_KEY` — optional override; empty = reuse `AI_GATEWAY_URL` / `AI_GATEWAY_API_KEY`.
+- `RAG_TOP_K` — past-findings cap per reviewer (default 5).
+
+The status line `RAG enabled: model=... dim=N top_k=K` (or one of the three "RAG disabled (...)") is logged at lifespan start so operators see at a glance whether retrieval is live.
+
 ## Persistence
 
 A single Postgres instance backs **both** the LangGraph checkpointer (run state, message history) and the pgvector vectorstore (embeddings for reference materials and past reviews). Connection comes from `DATABASE_URL`.
@@ -47,6 +71,12 @@ A single Postgres instance backs **both** the LangGraph checkpointer (run state,
 - Use `localhost` in `.env` when running the app from `.venv` against the compose-managed db
 - docker-compose overrides `DATABASE_URL` to use the in-network `postgres` hostname
 - `db/init/01-extensions.sql` enables `CREATE EXTENSION vector` on first boot only — subsequent schema migrations should live elsewhere
+
+## Security posture
+
+OWASP LLM Top 10 (2025) self-assessment + project baseline lives in [`docs/security-checklist.md`](docs/security-checklist.md), summarised as a table in [`README.md::Security checklist`](README.md#security-checklist). When adding a new capability, walk that file: a change to side effects re-evaluates LLM06; a new external dependency re-evaluates LLM03; a new format property of the review re-evaluates LLM09 and may want a new `benchmarks/judge` case so quality regressions surface quantitatively.
+
+Out of scope (documented gaps): per-user authentication, rate limiting, immutable audit log, HTTPS termination, browser CSP. These all move in-scope the moment the app is exposed outside the corp network.
 
 ## Project skills
 
@@ -90,7 +120,9 @@ All external clients must be mocked at the boundary:
 START → validate_request
             │ conditional
             ├──→ notify_rejection ──→ END                          (reject)
-            └──→ [dependency_review, injection_review, owasp_review]   (accept, parallel)
+            └──→ retrieve_past_context                              (accept — RAG step)
+                       ↓
+                [dependency_review, injection_review, owasp_review]   (parallel)
                        ↓ fan-in
                 review_decision
                        ↓ conditional
@@ -102,11 +134,11 @@ START → validate_request
                          process_proposal             (Phase C — chat-only, doesn't update file)
                                 ↓ conditional
                                 ├──→ process_proposal (more pending findings)
-                                └──→ END
+                                └──→ finalize_report → END
 ```
 
 **Phase A** inserted `validate_request` between START and the security-reviewer fan-out. `RequestValidator` runs a pure-code prefilter (empty diff / docs-only / autogen / oversized) and falls through to an LLM judge for anything ambiguous (trolling vs legitimate). The verdict is a `ValidationVerdict(accepted, category, reason)` stored in `state.validation`. The conditional edge `route_after_validation`:
-- `accepted=True` → fan out to all three reviewers in parallel
+- `accepted=True` → `retrieve_past_context` (the RAG step now sits between the validator and the reviewers; from there, a static edge fans out to all three reviewers in parallel)
 - `accepted=False` or `validation is None` (safety net) → `notify_rejection`
 
 `notify_rejection` posts a short category-templated PR comment via `CoordinatorAgent.notify_rejection` and ends the run. Templates live in `src/agents/coordinator.py::_REJECTION_TEMPLATES` keyed by category — tests assert on phrases derived from the category, not the prose.
@@ -146,6 +178,18 @@ The `publish_report` markdown gains an "Exploit proposals" section: approved ent
 All three security agents on the accept path still run concurrently. LangGraph waits for all of them at `review_decision` (fan-in). Each agent returns a partial update `{"agent_reviews": [one_review]}` which the `add` reducer concatenates into `state.agent_reviews`. Per-node un-reduced fields (e.g. `final_report`, `pr_comment_id`) are written only by `aggregate_results` / `publish_report` — never concurrently.
 
 `ALLOWED_SCOPE_ROLES = ("dependency", "injection", "owasp")`. Pass `scope=["injection"]` on a `ReviewRequest` to run just one reviewer.
+
+## Graph-node timing
+
+Every node in `build_review_graph` is wrapped with [`timed_node(...)`](src/utils/node_timing.py) which logs one structured line per invocation on the dedicated `graph.timing` logger:
+
+    node_complete node=<name> thread_id=<id> duration_ms=<int> status=ok | status=error error=<repr>
+
+Field order is stable — downstream parsers (`grep node_complete | awk -F'duration_ms='`, jq pipelines, plotting scripts) depend on it. Wrapper measures `time.perf_counter()` (monotonic), never mutates `state`, re-raises on exception after logging.
+
+Coverage: all 11 nodes (`validate_request`, `retrieve_past_context`, `notify_rejection`, three `*_review`, `review_decision`, `aggregate_results`, `publish_report`, `process_proposal`, `finalize_report`). `tests/integration/test_graph_timing_logged.py` catches any future `add_node` call that forgets the wrapper.
+
+Cost + latency expectations per mode, plus the awk/grep recipes for p50/p95 extraction, live in [`docs/performance-and-cost.md`](docs/performance-and-cost.md). These are companion data to Langfuse: Langfuse covers LLM-call-level details (tokens, prompts), the structured log covers graph-orchestration-level details (which nodes ran, in what order, how long each took).
 
 ## Observability — Langfuse
 
@@ -286,7 +330,7 @@ The actual model that gets called depends on the gateway resolution (see below).
 
 ## Model routing via the AI Gateway
 
-The default `USE_AI_GATEWAY=true` routes every LLM call through an OpenAI-compatible endpoint at `AI_GATEWAY_URL` (default: `http://10.30.1.14:8001/v1`, the local model server on the corp LAN). The actual model name passed to that endpoint is resolved in [src/models/factory.py](src/models/factory.py)::`_resolve_gateway_model`:
+The default `USE_AI_GATEWAY=true` routes every LLM call through an OpenAI-compatible endpoint at `AI_GATEWAY_URL` (default: `http://localhost:8001/v1` — a local serving box; real deployments point at a Bifrost / LiteLLM proxy, corp-LAN gateway, or a public provider via the gitignored `.env` override). The actual model name passed to that endpoint is resolved in [src/models/factory.py](src/models/factory.py)::`_resolve_gateway_model`:
 
 1. **Explicit pin** — `settings.AI_GATEWAY_MODEL` if set (e.g. `Qwen/Qwen2.5-Coder-32B-Instruct`).
 2. **Auto-discovery** — sync GET to `<AI_GATEWAY_URL>/models`, take the first `data[].id`. Cached in module-level `_discovered_gateway_model` so the network is hit at most once per process. 5-second timeout.
@@ -294,10 +338,10 @@ The default `USE_AI_GATEWAY=true` routes every LLM call through an OpenAI-compat
 
 So the same agent code works against (a) a local vLLM/llama.cpp box (auto-discovery picks the served model), (b) a pinned local model (set `AI_GATEWAY_MODEL`), (c) a Bifrost-style multi-provider proxy (leave both empty, mapping fires), or (d) `USE_AI_GATEWAY=false` plus per-provider keys for direct Anthropic/OpenAI/Google calls.
 
-Discover the model name on the default box:
+Discover the model name on whatever gateway you've pointed at:
 
 ```bash
-curl -s http://10.30.1.14:8001/v1/models | jq '.data[].id'
+curl -s "$AI_GATEWAY_URL/models" | jq '.data[].id'
 ```
 
 ## Dependencies and virtual environment
@@ -316,6 +360,25 @@ Any Python tool invocation must go through `.venv`:
 - `.venv/bin/pytest ...`
 - `.venv/bin/ruff ...`
 - or `source .venv/bin/activate` once per shell
+
+## Benchmarks
+
+`benchmarks/` (separate from `tests/`) measures agent accuracy across a fixed corpus of input/expected pairs and reports a single success-rate per suite. Three suites today implement the three-modality eval recipe (programmatic asserts + tool-call benchmarks + LLM-as-judge):
+
+- **`validator`** (14 cases) — exercises `RequestValidator` across all seven categories. Mix of pure-code prefilter cases (empty diff, docs-only, autogenerated, oversized) and LLM-judge cases (accepted refactor / SQL fix / new endpoint + trolling). Run with `python -m benchmarks.run validator` (live LLM) or `--mock-llm` for hermetic CI runs.
+- **`dependency`** (12 cases) — exercises `DependencyScanner` against OSV mocked inline per case. Covers npm v1/v2 lockfiles, pip requirements (plain pins, strict `===`, `[extras]`, env markers), mixed ecosystems, partial coverage (`Cargo.lock` recognised but unparsed), corrupt JSON, and severity edge cases. Always 100% deterministic.
+- **`judge`** (8 calibration cases) — exercises `LLMJudge` from [`src/evals/llm_judge.py`](src/evals/llm_judge.py) against labelled "good" and "bad" review reports. The judge reads a finished report and grades it against a fixed rubric (overall severity present, all three roles mentioned, no fake CVE format, exploit disclaimer present, no raw JSON in body). 3 deliberately-good + 5 deliberately-broken calibration reports. Judge accuracy on this calibration set IS the suite's success_rate — regression alarm when the judge starts grading inconsistently.
+
+CLI: `python -m benchmarks.run [validator | dependency | judge | all] [--mock-llm] [--min-success-rate FLOAT]`. Exit code 0 when every suite ≥ `--min-success-rate` (default 0.80), else 1 — wire into CI as a regression backstop.
+
+`tests/integration/test_benchmark_runner.py` runs all three suites with `--mock-llm` as a plumbing sanity check (loader, runner, assertion shape) — full `pytest` covers it.
+
+Current numbers (Sonnet 4.6, locally):
+- `dependency`: **100% (12/12)** — deterministic
+- `validator --mock-llm`: **86% (12/14)** — pure-code prefilter coverage; the two missed cases are trolling-detection that requires the LLM judge
+- `judge --mock-llm`: **38% (3/8)** — constant-accept mock catches the 3 good reports by accident; the 62 pp gap to live judge is the value-add of LLM-as-judge over a naïve oracle
+
+The mock-vs-live gap on `validator` and `judge` **is the meter** for how much each LLM-driven component contributes on top of deterministic rules / naïve oracles.
 
 ## Running tests
 

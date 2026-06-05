@@ -23,11 +23,13 @@ from fastapi.templating import Jinja2Templates
 from langgraph.types import Command
 
 from src.agents.coordinator import CoordinatorAgent
+from src.agents.past_context import PastContextAgent
 from src.chat.hub import ChatHub
 from src.chat.progress_store import ProgressStore
 from src.chat.store import ChatMessage, ChatStore
 from src.graph.coordinator import build_review_graph
 from src.graph.state import ALLOWED_SCOPE_ROLES, ReviewRequest, ReviewState
+from src.integrations.embedder import Embedder
 from src.integrations.github import GitHubClient
 from src.integrations.repo_fetcher import (
     cleanup_snapshot,
@@ -499,6 +501,20 @@ async def _persist_review(app: FastAPI, state: ReviewState) -> None:
         await store.save_review(state)
     except Exception as e:
         logger.error("ReviewStore.save_review failed: %s", e)
+        return
+
+    # RAG backfill — embed any unembedded findings (including the ones we
+    # just inserted) so the next review on this repo can retrieve them.
+    # Fire-and-forget: a missing embedder or a partial failure must not
+    # delay the HTTP response or block the chat broadcast.
+    embedder = getattr(app.state, "embedder", None)
+    if embedder is not None:
+        try:
+            count = await store.embed_pending(embedder)
+            if count:
+                logger.info("RAG backfill: embedded %d new finding(s)", count)
+        except Exception as e:
+            logger.warning("RAG backfill failed (non-fatal): %s", e)
 
 
 async def _emit_progress(app: FastAPI, thread_id: str, node: str, status: str) -> None:
@@ -809,6 +825,25 @@ def create_test_app(
     return app
 
 
+def _maybe_build_embedder() -> Embedder | None:
+    """Build an Embedder when EMBEDDING_MODEL is configured; else None.
+
+    Falls back to AI_GATEWAY_URL/API_KEY when the EMBEDDING_API_URL /
+    EMBEDDING_API_KEY are blank — single-box setups don't need to
+    duplicate creds. Empty model = RAG disabled (no instance created).
+    """
+    if not settings.EMBEDDING_MODEL:
+        return None
+    base_url = settings.EMBEDDING_API_URL or settings.AI_GATEWAY_URL
+    api_key = settings.EMBEDDING_API_KEY or settings.AI_GATEWAY_API_KEY
+    return Embedder(
+        base_url=base_url,
+        model=settings.EMBEDDING_MODEL,
+        api_key=api_key,
+        dim=settings.EMBEDDING_DIM,
+    )
+
+
 def _build_app() -> FastAPI:
     """Production app factory. Registers a lifespan that constructs the real
     GitHubClient, opens a PostgresSaver if DATABASE_URL is set, and compiles
@@ -827,10 +862,23 @@ def _build_app() -> FastAPI:
         # Docker (mountable via volume) and not lost when /tmp is wiped.
         Path(settings.SNAPSHOTS_DIR).mkdir(parents=True, exist_ok=True)
         coordinator = CoordinatorAgent(github=github, reports_dir=reports_dir)
+        # RAG embedder — built only when EMBEDDING_MODEL is configured.
+        # The agent is constructed lazily so build_review_graph stays
+        # checkpointer-aware ordering (graph compile must still happen
+        # inside the checkpointer context manager).
+        embedder = _maybe_build_embedder()
+        app.state.embedder = embedder
         async with open_checkpointer(settings.DATABASE_URL) as checkpointer:
+            # past_context will be re-bound below once we know whether
+            # the ReviewStore opened cleanly; meanwhile build the graph
+            # with a None-deps PastContextAgent so the topology is fixed.
+            past_context_agent = PastContextAgent(
+                embedder=embedder, store=None, top_k=settings.RAG_TOP_K
+            )
             app.state.graph = build_review_graph(
                 coordinator=coordinator,
                 checkpointer=checkpointer,
+                past_context=past_context_agent,
             )
             app.state.github = github
             # Bounded in-memory stores — see settings.IN_MEMORY_STORE_MAX_THREADS.
@@ -851,10 +899,26 @@ def _build_app() -> FastAPI:
                 try:
                     app.state.review_store = await ReviewStore.create(settings.DATABASE_URL)
                     logger.info("ReviewStore connected — persisting reviews to DB")
+                    # Late-bind the store on the PastContextAgent now that
+                    # it's open. The graph still references the same agent
+                    # instance, so attribute mutation propagates.
+                    past_context_agent.store = app.state.review_store
                 except Exception as e:
                     logger.warning("ReviewStore disabled (init failed): %s", e)
             else:
                 logger.info("ReviewStore disabled (DATABASE_URL empty)")
+            # RAG status log so operators see at a glance whether it's live.
+            if embedder is None:
+                logger.info("RAG disabled (EMBEDDING_MODEL not set)")
+            elif app.state.review_store is None:
+                logger.info("RAG disabled (no ReviewStore — DATABASE_URL empty or open failed)")
+            else:
+                logger.info(
+                    "RAG enabled: model=%r dim=%d top_k=%d",
+                    settings.EMBEDDING_MODEL,
+                    settings.EMBEDDING_DIM,
+                    settings.RAG_TOP_K,
+                )
             if app.state.langfuse_callback is None:
                 logger.info("Langfuse tracing disabled (LANGFUSE_* keys not set)")
             else:
@@ -867,6 +931,11 @@ def _build_app() -> FastAPI:
                         await app.state.review_store.aclose()
                     except Exception as e:
                         logger.warning("ReviewStore aclose failed: %s", e)
+                if app.state.embedder is not None:
+                    try:
+                        await app.state.embedder.aclose()
+                    except Exception as e:
+                        logger.warning("Embedder aclose failed: %s", e)
                 await github.aclose()
 
     app = FastAPI(title="ia-reviewer", version="0.1.0", lifespan=lifespan)

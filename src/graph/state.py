@@ -147,6 +147,12 @@ class ReviewState:
     # list, append, and return the whole thing. Keep it; without it every
     # node would need a read-modify-write boilerplate.
     exploit_proposals: Annotated[list[ExploitProposal], add] = field(default_factory=list)
+    # RAG — past similar findings retrieved by `PastContextAgent` before
+    # the security-reviewer fan-out. Single writer (`past_context` node),
+    # so NO reducer here — last write wins. `dict[role, list[finding-dict]]`.
+    # Empty dict means "no past findings retrieved" — could be a fresh
+    # repo, an embedder failure (fail-soft), or RAG disabled by config.
+    past_findings_by_role: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     final_report: str = ""
     pr_comment_id: int | None = None
     error: str = ""

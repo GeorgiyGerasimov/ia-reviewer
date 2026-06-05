@@ -1,0 +1,20 @@
+diff --git a/src/orders/processor.py b/src/orders/processor.py
+@@ -25,15 +25,9 @@ class OrderProcessor:
+     def process(self, order):
+-        if order.status != "pending":
+-            raise ValueError("not pending")
+-        if not order.items:
+-            raise ValueError("no items")
+-        if order.total < 0:
+-            raise ValueError("negative total")
++        self._validate(order)
+         self._charge(order)
+         self._fulfill(order)
++
++    def _validate(self, order):
++        if order.status != "pending":
++            raise ValueError("not pending")
++        if not order.items:
++            raise ValueError("no items")
++        if order.total < 0:
++            raise ValueError("negative total")

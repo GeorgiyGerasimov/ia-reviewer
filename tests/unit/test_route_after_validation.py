@@ -4,10 +4,12 @@ from src.graph.coordinator import route_after_validation
 from src.graph.state import ReviewState, ValidationVerdict
 
 
-def test_route_after_validation_picks_fanout_on_accept():
+def test_route_after_validation_picks_retrieve_past_context_on_accept():
+    """Accept path now goes through `retrieve_past_context` (RAG step)
+    before fanning out to the reviewers."""
     state = ReviewState(validation=ValidationVerdict(accepted=True, category="accepted", reason="ok"))
     target = route_after_validation(state)
-    assert target == ["dependency_review", "injection_review", "owasp_review"]
+    assert target == "retrieve_past_context"
 
 
 def test_route_after_validation_picks_rejection_on_reject():

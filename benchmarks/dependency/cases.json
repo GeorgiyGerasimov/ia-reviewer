@@ -1,0 +1,193 @@
+{
+  "$schema": "Each case: {name, category, manifests: [{path, fixture}], osv: {querybatch, vuln_details: {id: response}}, expected}. The runner: (1) writes manifests into a tempdir as a 'snapshot', (2) mocks OSV /v1/querybatch + /v1/vulns/{id} via respx with the inline responses, (3) runs DependencyScanner.scan(), (4) asserts on findings. OSV mocks are inline (not separate files) so each case reads top-to-bottom.",
+  "cases": [
+    {
+      "name": "npm-lockfile-v1-lodash-vulnerable",
+      "category": "npm/v1/vulnerable",
+      "manifests": [{"path": "package-lock.json", "fixture": "lodash_vulnerable_v1.json"}],
+      "osv": {
+        "querybatch": {"results": [{"vulns": [{"id": "GHSA-35jh-r3h4-6jhm"}]}]},
+        "vuln_details": {
+          "GHSA-35jh-r3h4-6jhm": {
+            "id": "GHSA-35jh-r3h4-6jhm",
+            "aliases": ["CVE-2021-23337"],
+            "summary": "Command Injection in lodash via template",
+            "severity": [{"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H/E:H 9.8"}],
+            "affected": [{"ranges": [{"events": [{"introduced": "0"}, {"fixed": "4.17.21"}]}]}],
+            "references": [{"url": "https://github.com/lodash/lodash/issues/4980"}]
+          }
+        }
+      },
+      "expected": {"min_findings": 1, "must_include_cves": ["CVE-2021-23337"], "expected_severity": "critical"}
+    },
+    {
+      "name": "npm-lockfile-v1-lodash-safe",
+      "category": "npm/v1/clean",
+      "manifests": [{"path": "package-lock.json", "fixture": "lodash_safe_v1.json"}],
+      "osv": {
+        "querybatch": {"results": [{"vulns": []}]},
+        "vuln_details": {}
+      },
+      "expected": {"min_findings": 0, "max_findings": 0, "must_be_clean": true}
+    },
+    {
+      "name": "npm-lockfile-v2-axios-vulnerable",
+      "category": "npm/v2/vulnerable",
+      "manifests": [{"path": "package-lock.json", "fixture": "axios_vulnerable_v2.json"}],
+      "osv": {
+        "querybatch": {"results": [{"vulns": [{"id": "GHSA-cph5-m8f7-6c5x"}]}]},
+        "vuln_details": {
+          "GHSA-cph5-m8f7-6c5x": {
+            "id": "GHSA-cph5-m8f7-6c5x",
+            "aliases": ["CVE-2020-28168"],
+            "summary": "SSRF in axios",
+            "severity": [{"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:L/A:N 5.3"}],
+            "affected": [{"ranges": [{"events": [{"introduced": "0"}, {"fixed": "0.21.1"}]}]}],
+            "references": [{"url": "https://github.com/axios/axios/pull/3410"}]
+          }
+        }
+      },
+      "expected": {"min_findings": 1, "must_include_cves": ["CVE-2020-28168"], "expected_severity": "minor"}
+    },
+    {
+      "name": "pip-urllib3-vulnerable",
+      "category": "pip/vulnerable",
+      "manifests": [{"path": "requirements.txt", "fixture": "urllib3_vulnerable.txt"}],
+      "osv": {
+        "querybatch": {"results": [
+          {"vulns": [{"id": "GHSA-q2q7-5pp4-w6pg"}]},
+          {"vulns": []}
+        ]},
+        "vuln_details": {
+          "GHSA-q2q7-5pp4-w6pg": {
+            "id": "GHSA-q2q7-5pp4-w6pg",
+            "aliases": ["CVE-2020-26137"],
+            "summary": "CRLF injection in urllib3",
+            "severity": [{"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N 6.5"}],
+            "affected": [{"ranges": [{"events": [{"introduced": "0"}, {"fixed": "1.25.9"}]}]}],
+            "references": [{"url": "https://github.com/urllib3/urllib3/pull/1800"}]
+          }
+        }
+      },
+      "expected": {"min_findings": 1, "must_include_cves": ["CVE-2020-26137"]}
+    },
+    {
+      "name": "pip-urllib3-safe",
+      "category": "pip/clean",
+      "manifests": [{"path": "requirements.txt", "fixture": "urllib3_safe.txt"}],
+      "osv": {
+        "querybatch": {"results": [{"vulns": []}, {"vulns": []}]},
+        "vuln_details": {}
+      },
+      "expected": {"min_findings": 0, "max_findings": 0, "must_be_clean": true}
+    },
+    {
+      "name": "pip-django-multiple-cves",
+      "category": "pip/multi-cve",
+      "manifests": [{"path": "requirements.txt", "fixture": "django_multi_cve.txt"}],
+      "osv": {
+        "querybatch": {"results": [{"vulns": [{"id": "GHSA-fake-dj-1"}, {"id": "GHSA-fake-dj-2"}]}]},
+        "vuln_details": {
+          "GHSA-fake-dj-1": {
+            "id": "GHSA-fake-dj-1",
+            "aliases": ["CVE-2021-31542"],
+            "summary": "Path traversal via uploaded file names",
+            "severity": [{"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N"}],
+            "affected": [{"ranges": [{"events": [{"introduced": "0"}, {"fixed": "3.2.4"}]}]}],
+            "references": []
+          },
+          "GHSA-fake-dj-2": {
+            "id": "GHSA-fake-dj-2",
+            "aliases": ["CVE-2022-22818"],
+            "summary": "XSS in {% debug %} template tag",
+            "severity": [{"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N"}],
+            "affected": [{"ranges": [{"events": [{"introduced": "0"}, {"fixed": "3.2.12"}]}]}],
+            "references": []
+          }
+        }
+      },
+      "expected": {"min_findings": 2, "must_include_cves": ["CVE-2021-31542", "CVE-2022-22818"]}
+    },
+    {
+      "name": "pip-strict-pin-triple-equals",
+      "category": "pip/strict-pin",
+      "manifests": [{"path": "requirements.txt", "fixture": "strict_pin.txt"}],
+      "osv": {
+        "querybatch": {"results": [{"vulns": [{"id": "GHSA-fake-crypto-1"}]}]},
+        "vuln_details": {
+          "GHSA-fake-crypto-1": {
+            "id": "GHSA-fake-crypto-1",
+            "aliases": ["CVE-2021-23840"],
+            "summary": "Integer overflow in OpenSSL bindings",
+            "severity": [{"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:N/I:N/A:H"}],
+            "affected": [{"ranges": [{"events": [{"introduced": "0"}, {"fixed": "3.4.8"}]}]}],
+            "references": []
+          }
+        }
+      },
+      "expected": {"min_findings": 1, "must_include_cves": ["CVE-2021-23840"]}
+    },
+    {
+      "name": "pip-with-extras-and-env-markers",
+      "category": "pip/extras",
+      "manifests": [{"path": "requirements.txt", "fixture": "with_extras.txt"}],
+      "osv": {
+        "querybatch": {"results": [{"vulns": []}, {"vulns": []}]},
+        "vuln_details": {}
+      },
+      "expected": {"min_findings": 0, "max_findings": 0, "must_be_clean": true, "min_packages_scanned": 2}
+    },
+    {
+      "name": "mixed-ecosystems-npm-and-pip",
+      "category": "multi-ecosystem",
+      "manifests": [
+        {"path": "package-lock.json", "fixture": "lodash_safe_v1.json"},
+        {"path": "requirements.txt", "fixture": "urllib3_safe.txt"}
+      ],
+      "osv": {
+        "querybatch": {"results": [{"vulns": []}, {"vulns": []}, {"vulns": []}]},
+        "vuln_details": {}
+      },
+      "expected": {"min_findings": 0, "max_findings": 0, "must_be_clean": true, "min_packages_scanned": 3}
+    },
+    {
+      "name": "unsupported-manifest-cargo-only",
+      "category": "partial-coverage",
+      "manifests": [{"path": "Cargo.lock", "fixture": "cargo_only.lock"}],
+      "osv": {
+        "querybatch": {"results": []},
+        "vuln_details": {}
+      },
+      "expected": {"min_findings": 0, "must_include_unsupported": ["Cargo.lock"]}
+    },
+    {
+      "name": "corrupt-lockfile-json",
+      "category": "error-tolerance",
+      "manifests": [{"path": "package-lock.json", "fixture": "corrupt.json"}],
+      "osv": {
+        "querybatch": {"results": []},
+        "vuln_details": {}
+      },
+      "expected": {"min_findings": 0, "must_have_notes": true}
+    },
+    {
+      "name": "missing-severity-falls-back-to-minor",
+      "category": "severity-mapping",
+      "manifests": [{"path": "package-lock.json", "fixture": "lodash_vulnerable_v1.json"}],
+      "osv": {
+        "querybatch": {"results": [{"vulns": [{"id": "GHSA-no-severity"}]}]},
+        "vuln_details": {
+          "GHSA-no-severity": {
+            "id": "GHSA-no-severity",
+            "aliases": ["CVE-2099-00000"],
+            "summary": "Hypothetical vuln with no CVSS",
+            "severity": [],
+            "affected": [{"ranges": [{"events": [{"fixed": "5.0.0"}]}]}],
+            "references": []
+          }
+        }
+      },
+      "expected": {"min_findings": 1, "expected_severity": "minor"}
+    }
+  ]
+}

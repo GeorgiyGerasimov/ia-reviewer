@@ -1,0 +1,23 @@
+diff --git a/src/api/users.py b/src/api/users.py
+@@ -42,0 +43,15 @@
++@app.delete("/users/{user_id}")
++async def delete_user(user_id: int, current_user = Depends(get_current_user)):
++    """Delete a user. Requires admin role."""
++    if not current_user.is_admin:
++        raise HTTPException(status_code=403, detail="admin required")
++    user = await User.get_or_404(user_id)
++    await user.delete()
++    audit_log.info("user_deleted", target_id=user_id, by=current_user.id)
++    return {"status": "deleted"}
++
+diff --git a/tests/test_users_api.py b/tests/test_users_api.py
+@@ -50,0 +51,12 @@
++async def test_delete_user_requires_admin(client, regular_user):
++    response = await client.delete("/users/123", headers=auth(regular_user))
++    assert response.status_code == 403
++
++async def test_delete_user_admin_succeeds(client, admin_user, target_user):
++    response = await client.delete(
++        f"/users/{target_user.id}", headers=auth(admin_user)
++    )
++    assert response.status_code == 200
