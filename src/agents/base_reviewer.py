@@ -26,6 +26,7 @@ from src.graph.state import AgentReview, RepoFile, ReviewState
 from src.integrations.github import GitHubClient
 from src.models.factory import ModelFactory
 from src.utils.config import settings
+from src.utils.llm_parsing import strip_thinking_trace
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -242,6 +243,15 @@ class BaseReviewer:
         return "\n".join(lines)
 
     def _parse_response(self, content: str) -> dict:
+        # Hybrid-thinking models (Qwen3.6-27B, DeepSeek R1, o1-style)
+        # prepend a chain-of-thought trace fenced by `</think>` before
+        # the actual JSON. Strip that BEFORE the JSON-block regex runs —
+        # otherwise the long prose either chokes `json.loads` (raw path)
+        # or hides a real ```json fence inside the thinking. See
+        # tests/unit/test_base_reviewer_thinking.py for the contract
+        # and `docs/observed-quality-cases/` for the empirical anchor
+        # (Qwen3.6-27B sends ~95% of tokens as thinking trace).
+        content = strip_thinking_trace(content)
         match = _JSON_BLOCK_RE.search(content)
         payload = match.group(1) if match else content.strip()
         try:
