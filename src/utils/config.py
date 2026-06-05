@@ -186,6 +186,20 @@ class Settings(BaseSettings):
     # for the TL;DR section; anything past this cap is treated as the
     # model going off-rails and dropped silently (fail-soft).
     REPORT_FORMATTER_MAX_CHARS: int = 2000
+    # When True, every TL;DR produced by `ReportFormatter` is run through
+    # `LLMJudge` against a small formatter-specific rubric (does it cite
+    # only real files? does it invent CVE ids? does it change severity
+    # buckets?). If the judge marks `passed=False` — or the judge call
+    # itself errors — the TL;DR is dropped and the deterministic report
+    # is published. Fail-CLOSED for the gate: when we can't verify the
+    # polish is grounded, conservatively don't ship it.
+    #
+    # This is the "LLM-as-judge inline in the graph" production pattern
+    # (see docs/judge-in-production.md). Costs one extra LLM call per
+    # review. Independent of `ENABLE_REPORT_FORMATTER`: the gate has no
+    # effect when the formatter is off, but you must turn the formatter
+    # on for the gate to do anything.
+    FORMATTER_JUDGE_CHECK: bool = False
 
     # ── LLM-as-judge model override ─────────────────────────────────────
     # The judge (`src/evals/llm_judge.py`) defaults to the same model as
