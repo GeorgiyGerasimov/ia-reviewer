@@ -1,5 +1,8 @@
 # ia-reviewer
 
+[![CI](https://github.com/GeorgiyGerasimov/ia-reviewer/actions/workflows/ci.yml/badge.svg)](https://github.com/GeorgiyGerasimov/ia-reviewer/actions/workflows/ci.yml)
+[![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/license-PolyForm%20NC%201.0.0-blue)](LICENSE)
+
 Multi-agent AI **security** code reviewer for GitHub, built on LangGraph
 and FastAPI. Runs three specialist reviewers in parallel, optionally
 pauses for a human, and publishes a single consolidated Markdown report.

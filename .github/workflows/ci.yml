@@ -1,0 +1,60 @@
+# CI — lint + tests + benchmark gate on every push / PR to main.
+#
+# Everything in this workflow is hermetic:
+#   * no Postgres service (tests mock asyncpg pool/connection)
+#   * no live LLM (tests mock ModelFactory; benchmarks use --mock-llm)
+#   * no network calls to OSV / GitHub / embedder (all mocked via respx)
+#
+# Total runtime: ~1 minute. Well under the 2000 min/month free-tier
+# budget on private repos.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel an in-flight CI run when a newer commit lands on the same
+# branch — saves minutes on rapid-fire pushes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Lint + tests + benchmark gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Ruff (lint)
+        run: ruff check src/ tests/ main.py benchmarks/
+
+      - name: Pytest (391 tests)
+        run: pytest -v --tb=short
+
+      # Two benchmark gates. The judge suite is intentionally NOT gated
+      # here — it's a calibration set that only makes sense against a
+      # live LLM (mock mode misses 5/8 cases by design). Run it
+      # locally / from a separate workflow if you want to track
+      # judge accuracy over time.
+      - name: Benchmark — dependency (deterministic, gate at 100%)
+        run: python -m benchmarks.run dependency --min-success-rate 1.0
+
+      - name: Benchmark — validator (--mock-llm, pure-code floor 80%)
+        run: python -m benchmarks.run validator --mock-llm --min-success-rate 0.80
