@@ -153,6 +153,14 @@ class CoordinatorAgent:
             request=state.request,
             thread_id=state.thread_id,
         )
+        # If `format_report` produced a TL;DR earlier in the run, re-splice
+        # it here. `render_review` re-renders the body from scratch, so
+        # the TL;DR section that publish_report wrote to disk is GONE
+        # from `new_body` until we put it back. `splice_tldr` is idempotent
+        # and accepts an empty `report_tldr` as a no-op, so this is safe
+        # in both formatter-on and formatter-off runs.
+        if state.report_tldr:
+            new_body = self.renderer.splice_tldr(new_body, state.report_tldr)
 
         # Always mirror the latest body to disk, for both modes — the UI's
         # report panel reads `/reports/<id>.md` in both modes.

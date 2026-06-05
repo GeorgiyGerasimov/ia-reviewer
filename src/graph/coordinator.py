@@ -8,6 +8,7 @@ from src.agents.exploit_proposal import ExploitProposalAgent, route_after_propos
 from src.agents.injection import InjectionReviewer
 from src.agents.owasp import OWASPTop10Reviewer
 from src.agents.past_context import PastContextAgent
+from src.agents.report_formatter import ReportFormatter
 from src.agents.review_decision import ReviewDecisionAgent
 from src.agents.validator import RequestValidator
 from src.graph.state import ReviewState
@@ -52,6 +53,7 @@ def build_review_graph(
     owasp: OWASPTop10Reviewer | None = None,
     exploit_proposal: ExploitProposalAgent | None = None,
     past_context: PastContextAgent | None = None,
+    report_formatter: ReportFormatter | None = None,
     *,
     checkpointer: BaseCheckpointSaver | None = None,
     github=None,
@@ -104,6 +106,12 @@ def build_review_graph(
     # or store is None, `run()` short-circuits to an empty update. Keeps
     # the topology stable across "RAG configured" / "RAG disabled" setups.
     past_context = past_context or PastContextAgent()
+    # `ReportFormatter` is always added to the graph — when
+    # `settings.ENABLE_REPORT_FORMATTER=False`, its `run()` short-circuits
+    # to an empty update. Same pattern as `past_context`: the topology
+    # doesn't change between "formatter on" and "formatter off", so the
+    # flag is a runtime toggle, not a deploy-time decision.
+    report_formatter = report_formatter or ReportFormatter()
 
     graph = StateGraph(ReviewState)
     # Every node is wrapped in `timed_node(...)` so wall-clock durations
@@ -119,6 +127,7 @@ def build_review_graph(
     graph.add_node("owasp_review", timed_node("owasp_review")(owasp.run))
     graph.add_node("review_decision", timed_node("review_decision")(review_decision.run))
     graph.add_node("aggregate_results", timed_node("aggregate_results")(coordinator.aggregate))
+    graph.add_node("format_report", timed_node("format_report")(report_formatter.run))
     graph.add_node("process_proposal", timed_node("process_proposal")(exploit_proposal.run))
     graph.add_node("publish_report", timed_node("publish_report")(coordinator.publish))
     # Re-render the main `.md` once the exploit loop has populated
@@ -153,9 +162,18 @@ def build_review_graph(
     )
 
     # Publish FIRST — the rendered report is durable as soon as aggregate
-    # produced it. The exploit branch runs afterwards (chat-only) and
-    # cannot stall the report on a human prompt that may never get answered.
-    graph.add_edge("aggregate_results", "publish_report")
+    # produced it (and optional formatter polished it). The exploit branch
+    # runs afterwards (chat-only) and cannot stall the report on a human
+    # prompt that may never get answered.
+    #
+    # `format_report` sits between aggregate and publish. When
+    # `ENABLE_REPORT_FORMATTER=False` (the default), the node returns
+    # `{}` and the deterministic report passes through unchanged. When
+    # ON, it splices a `### TL;DR` section into `state.final_report` and
+    # stores the prose in `state.report_tldr` for later re-splicing by
+    # `finalize_exploits`. Fail-soft on any error.
+    graph.add_edge("aggregate_results", "format_report")
+    graph.add_edge("format_report", "publish_report")
     graph.add_edge("publish_report", "process_proposal")
     graph.add_conditional_edges(
         "process_proposal",

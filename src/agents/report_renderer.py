@@ -191,6 +191,67 @@ class ReportRenderer:
     def render_exploit_sibling(self, ep: ExploitProposal, *, thread_id: str = "") -> str:
         return _render_exploit_sibling(ep, thread_id)
 
+    def splice_tldr(self, body: str, tldr_text: str) -> str:
+        """Insert (or replace) a `### TL;DR` block in an already-rendered
+        report body.
+
+        Insertion point: right after the `**Overall severity:**` line,
+        with a blank line separator on each side. The deterministic
+        `### Summary` table follows immediately after — so the block
+        order reads severity → TL;DR → Summary → Critical findings →
+        per-role sections.
+
+        Idempotent: if the body already contains a `### TL;DR ... <next H3>`
+        block, that block is REPLACED rather than duplicated. This is
+        what lets `finalize_exploits` re-render the body from scratch
+        and call splice again on every iteration without accumulating
+        TL;DR copies.
+
+        Fallback: if the body has no `**Overall severity:**` line (e.g.
+        a tombstone "no reviewers ran" body), insert after the
+        `## Security review` title. If even that is missing, prepend
+        the block to the body — better than silently dropping it.
+
+        Empty `tldr_text` (after strip) → return `body` unchanged.
+        """
+        cleaned = (tldr_text or "").strip()
+        if not cleaned:
+            return body
+
+        # Strip any existing TL;DR block first — keeps splice idempotent.
+        body = _strip_existing_tldr(body)
+        tldr_block = f"### TL;DR\n\n{cleaned}\n"
+
+        # Anchor 1: `**Overall severity:**` line. Splice on the FIRST
+        # blank line after it.
+        sev_idx = body.find("**Overall severity:**")
+        if sev_idx != -1:
+            # Find end-of-line for the severity line, then the next blank
+            # line that separates it from whatever follows.
+            line_end = body.find("\n", sev_idx)
+            if line_end == -1:
+                line_end = len(body)
+            # Skip any blank line(s) right after the severity header so
+            # we land at the next non-blank content's start; then prepend
+            # our block with one blank line separator on each side.
+            insert_at = line_end + 1
+            # Hop over a single blank line if present.
+            if body[insert_at:insert_at + 1] == "\n":
+                insert_at += 1
+            return body[:insert_at] + tldr_block + "\n" + body[insert_at:]
+
+        # Anchor 2 (fallback): `## Security review` title.
+        title_idx = body.find("## Security review")
+        if title_idx != -1:
+            line_end = body.find("\n", title_idx)
+            insert_at = (line_end + 1) if line_end != -1 else len(body)
+            if body[insert_at:insert_at + 1] == "\n":
+                insert_at += 1
+            return body[:insert_at] + tldr_block + "\n" + body[insert_at:]
+
+        # Anchor 3 (final fallback): prepend.
+        return tldr_block + "\n" + body
+
     @staticmethod
     def exploit_artifact_filename(thread_id: str, finding_id: str) -> str:
         """Stable filename for a save_mode=file artifact. `unknown.exploit…`
@@ -328,6 +389,29 @@ def _render_exploit_sibling(ep: ExploitProposal, thread_id: str) -> str:
     parts.append("```")
     parts.append("")
     return "\n".join(parts)
+
+
+def _strip_existing_tldr(body: str) -> str:
+    """Remove a previously-spliced `### TL;DR ...` block.
+
+    Boundaries: from the `### TL;DR` header up to (but not including) the
+    next `### ` H3 header — or end-of-string when this is the last block.
+    Used by `ReportRenderer.splice_tldr` to keep the splice idempotent
+    across multiple invocations (e.g. on each `finalize_exploits` pass).
+    """
+    start = body.find("### TL;DR")
+    if start == -1:
+        return body
+    # Skip past the TL;DR header itself, then find the next H3 header.
+    after_header = start + len("### TL;DR")
+    next_h3 = body.find("\n### ", after_header)
+    if next_h3 == -1:
+        # TL;DR was the last block; drop everything after `start`.
+        return body[:start].rstrip() + "\n"
+    # `+1` to keep the newline that the next H3 starts with as the
+    # body's own leading newline, so we don't end up gluing two lines
+    # together. The substring `body[next_h3+1:]` begins at the next H3.
+    return body[:start] + body[next_h3 + 1:]
 
 
 def _render_severity_breakdown(reviews: list[AgentReview]) -> list[str]:
