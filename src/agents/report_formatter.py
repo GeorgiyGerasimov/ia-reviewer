@@ -23,17 +23,21 @@ Fail-soft contract: ANY exception, an empty response, or an oversized
 response → return `{}`. The deterministic report stays the published
 version. The agent NEVER blocks publishing.
 
-Hallucination guardrail: this agent is the canonical use-case for
-running `LLMJudge` over its own output (see
-docs/judge-in-production.md). That wiring is intentionally NOT done
-here — it would double the per-call cost. Operators who want it can
-wrap `_call_llm` in a follow-up commit; the existing fail-soft path
-already swallows any judge-style rollback.
+Hallucination guardrail (optional, default OFF):
+`settings.FORMATTER_JUDGE_CHECK=True` runs every generated TL;DR
+through `LLMJudge` against a small formatter-specific rubric (cites
+only real files? invents CVE ids? changes severity buckets?). If the
+judge rejects — or the judge call itself errors — the TL;DR is
+dropped and the deterministic report wins. Fail-CLOSED for the gate:
+when we cannot verify the polish is grounded, conservatively don't
+ship it. Costs one extra LLM call per review when on. See
+docs/judge-in-production.md for the production pattern.
 """
 
 from __future__ import annotations
 
 from src.agents.report_renderer import ReportRenderer
+from src.evals.llm_judge import Criterion, LLMJudge
 from src.graph.state import AgentReview, ReviewState
 from src.models.factory import ModelFactory
 from src.utils.config import settings
@@ -42,6 +46,47 @@ from src.utils.logger import get_logger
 logger = get_logger(__name__)
 
 _DEFAULT_MODEL = "claude-sonnet-4-6"
+
+# Formatter-specific rubric — narrow set of criteria targeting the
+# hallucination failure modes the LLM-copywriter can introduce. Each
+# criterion is observable from the eval doc (findings + proposed TL;DR
+# side by side) — no external knowledge required from the judge.
+_JUDGE_CRITERIA: list[Criterion] = [
+    Criterion(
+        name="tldr_only_real_files",
+        description=(
+            "The 'Proposed TL;DR' section ONLY references file paths "
+            "that appear in the 'Findings (ground truth)' section above. "
+            "If the TL;DR mentions a path not listed there, mark as not met."
+        ),
+    ),
+    Criterion(
+        name="tldr_only_real_cves",
+        description=(
+            "Any CVE id mentioned in the 'Proposed TL;DR' must also appear "
+            "verbatim in the 'Findings (ground truth)' section. Inventing "
+            "CVE numbers (or using placeholder shapes like 'CVE-XXXX-XXXX') "
+            "is not acceptable."
+        ),
+    ),
+    Criterion(
+        name="tldr_respects_severity",
+        description=(
+            "The TL;DR must not upgrade or downgrade severity buckets. "
+            "If a finding is listed as `[major]` in the ground truth, the "
+            "TL;DR may not call it critical (or minor). Severity drift "
+            "between the ground truth and the TL;DR is a failure."
+        ),
+    ),
+    Criterion(
+        name="tldr_no_invented_findings",
+        description=(
+            "The TL;DR must not add findings that are absent from the "
+            "ground truth — no extrapolation ('if this is exploitable then…') "
+            "and no items the reviewer never produced."
+        ),
+    ),
+]
 
 _PROMPT_TEMPLATE = """You are writing a short TL;DR for a security review.
 You will be given a structured list of findings. Your job is to write
@@ -69,13 +114,22 @@ Now write the TL;DR following the rules above:
 class ReportFormatter:
     """Optional LLM polish layer for review reports."""
 
-    def __init__(self, model_name: str | None = None):
+    def __init__(
+        self,
+        model_name: str | None = None,
+        judge: LLMJudge | None = None,
+    ):
         # Resolution order mirrors LLMJudge: explicit arg → env override
         # → built-in default. The model is constructed lazily on first
         # `run()` when enabled — keeps `__init__` cheap so the agent can
         # always be added to the graph without paying a factory cost.
         self._model_name_override = model_name
         self._model = None
+        # `judge` is the optional LLMJudge instance used by the
+        # FORMATTER_JUDGE_CHECK gate. None = lazy-build via LLMJudge()
+        # on first need (with whatever `JUDGE_MODEL` env setting is
+        # active). Tests inject a fake judge directly via this arg.
+        self._judge = judge
 
     def _resolve_model(self):
         if self._model is not None:
@@ -87,6 +141,11 @@ class ReportFormatter:
         )
         self._model = ModelFactory.get(model_name)
         return self._model
+
+    def _resolve_judge(self) -> LLMJudge:
+        if self._judge is None:
+            self._judge = LLMJudge()
+        return self._judge
 
     async def run(self, state: ReviewState) -> dict:
         """Generate + splice the TL;DR. Returns `{}` on any fail-soft path."""
@@ -114,8 +173,56 @@ class ReportFormatter:
             # _call_llm_safely already logged the reason.
             return {}
 
+        # Optional LLMJudge gate. When on, every TL;DR must pass a small
+        # formatter-specific rubric BEFORE it lands in the report.
+        # Fail-CLOSED: if the gate verdict says no, or the judge call
+        # itself errors, drop the TL;DR and let the deterministic report
+        # be what gets published.
+        if settings.FORMATTER_JUDGE_CHECK and not await self._tldr_passes_judge_gate(
+            tldr_text, reviews
+        ):
+            return {}
+
         new_body = ReportRenderer().splice_tldr(state.final_report, tldr_text)
         return {"report_tldr": tldr_text, "final_report": new_body}
+
+    async def _tldr_passes_judge_gate(
+        self,
+        tldr_text: str,
+        reviews: list[AgentReview],
+    ) -> bool:
+        """Run the LLM-judge gate over the generated TL;DR.
+
+        Returns True iff the judge marks every criterion met. Returns
+        False on:
+          - judge exception (fail-CLOSED — when we can't verify, don't
+            ship; the deterministic report still publishes so the user
+            never loses information).
+          - `JudgeVerdict.passed=False`.
+
+        All failure paths are logged at WARNING so operators can see why
+        a TL;DR was dropped without ops-alerting tooling firing.
+        """
+        eval_doc = _build_judge_doc(tldr_text, reviews)
+        try:
+            judge = self._resolve_judge()
+            verdict = await judge.evaluate(eval_doc, _JUDGE_CRITERIA)
+        except Exception as e:
+            logger.warning(
+                "format_report: judge gate errored (%s); dropping TL;DR for safety", e
+            )
+            return False
+
+        if not verdict.passed:
+            failed = [c.name for c in verdict.per_criterion if not c.met]
+            logger.warning(
+                "format_report: judge gate rejected TL;DR (failed criteria: %s, "
+                "rationale: %s); dropping",
+                failed,
+                verdict.rationale,
+            )
+            return False
+        return True
 
     async def _call_llm_safely(self, prompt: str) -> str:
         """Wrap the LLM call with full fail-soft semantics.
@@ -153,6 +260,40 @@ class ReportFormatter:
             return ""
 
         return cleaned
+
+
+def _build_judge_doc(tldr_text: str, reviews: list[AgentReview]) -> str:
+    """Build the side-by-side eval document the judge sees.
+
+    Two sections:
+      1. **Findings (ground truth)** — flat enumeration of every finding,
+         tagged with role / file / severity. This is what the TL;DR is
+         allowed to reference.
+      2. **Proposed TL;DR (under review)** — the prose to judge.
+
+    The criteria all evaluate the TL;DR against the ground-truth section,
+    so the judge needs both in the same document.
+    """
+    findings_lines: list[str] = []
+    for r in reviews:
+        for f in r.findings:
+            file_loc = f.get("file", "?")
+            if f.get("line"):
+                file_loc = f"{file_loc}:{f['line']}"
+            sev = f.get("severity", "info")
+            cat = f.get("category") or f.get("package") or ""
+            issue = f.get("issue") or f.get("raw") or ""
+            cat_part = f" {cat} —" if cat else ""
+            findings_lines.append(
+                f"- [{r.role}] {file_loc} —{cat_part} [{sev}] {issue}"
+            )
+    findings_block = "\n".join(findings_lines) or "(no findings)"
+    return (
+        "## Findings (ground truth)\n\n"
+        f"{findings_block}\n\n"
+        "## Proposed TL;DR (under review)\n\n"
+        f"{tldr_text}\n"
+    )
 
 
 def _build_prompt(reviews: list[AgentReview]) -> str:
