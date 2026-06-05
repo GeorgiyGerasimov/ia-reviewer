@@ -27,6 +27,7 @@ from dataclasses import dataclass
 
 from src.models.factory import ModelFactory
 from src.utils.config import settings
+from src.utils.llm_parsing import strip_thinking_trace
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -202,7 +203,14 @@ def _parse_response(content: str, criteria: list[Criterion]) -> JudgeVerdict:
 
 def _extract_json_text(content: str) -> str:
     """Pull the JSON body out of an optional ```json ... ``` fence, or
-    return the trimmed content as-is."""
+    return the trimmed content as-is.
+
+    Pre-strips any reasoning-model thinking trace (`</think>`-fenced)
+    before fence detection. This handles Qwen3.6-27B / DeepSeek R1 /
+    o1-style judges whose response is `<long-thinking>\n</think>\n{json}`.
+    Same pattern as `BaseReviewer._parse_response`.
+    """
+    content = strip_thinking_trace(content)
     match = _FENCED_JSON_RE.search(content)
     if match:
         return match.group(1)
