@@ -25,6 +25,7 @@ from langgraph.types import Command
 
 from src.agents.coordinator import CoordinatorAgent
 from src.agents.past_context import PastContextAgent
+from src.chat.active_reviews import ActiveReviewsRegistry
 from src.chat.hub import ChatHub
 from src.chat.progress_emitter import ProgressEmitter, use_emitter
 from src.chat.progress_log import progress_log_loop
@@ -162,6 +163,18 @@ def _register_routes(app: FastAPI) -> None:
             return JSONResponse({"error": str(exc)}, status_code=400)
         rows = await store.list_reviews(limit=limit, offset=offset)
         return JSONResponse(jsonable_encoder(rows), status_code=200)
+
+    @app.get("/reviews/active")
+    async def list_active_reviews(request: Request) -> JSONResponse:
+        """In-flight reviews — for the UI's 'Active reviews' poll.
+
+        Pure in-memory snapshot from ActiveReviewsRegistry; does NOT
+        touch the DB. Returned ordered by `started_at` ascending so
+        the longest-running review sits at the top of the list.
+        """
+        registry = request.app.state.active_reviews
+        items = [s.to_dict() for s in registry.list_active()]
+        return JSONResponse(items, status_code=200)
 
     @app.get("/reviews/{thread_id}")
     async def get_review(request: Request, thread_id: str) -> JSONResponse:
@@ -427,6 +440,10 @@ async def _run_review(app: FastAPI, pr_url: str, scope: list[str], thread_id: st
     answers via the WebSocket and `_resume_review` carries the resume back
     to the graph.
     """
+    # Register in the in-flight tracker so the UI's `Active reviews`
+    # poll sees this thread. Done BEFORE the github fetch so even slow
+    # network setup shows the review as "starting".
+    app.state.active_reviews.register(thread_id, mode="pr", target=pr_url)
     try:
         review_request = await app.state.github.fetch_pr(pr_url)
         review_request.scope = scope
@@ -437,6 +454,8 @@ async def _run_review(app: FastAPI, pr_url: str, scope: list[str], thread_id: st
         await _persist_review(app, state)
     except Exception as e:
         logger.error("review failed for %s: %s", pr_url, e)
+    finally:
+        app.state.active_reviews.unregister(thread_id)
 
 
 async def _run_repo_review(
@@ -459,6 +478,12 @@ async def _run_repo_review(
     """
     snapshot_dir = None
     progress_log_task: asyncio.Task | None = None
+    # Register in the in-flight tracker so the UI's `Active reviews`
+    # poll sees this thread. Done up front — before clone — so the
+    # UI surfaces "starting" reviews even while git is still working.
+    app.state.active_reviews.register(
+        thread_id, mode="repo", target=repo_url, ref=ref,
+    )
     # Bind a ProgressEmitter for this review's thread_id and install it
     # into the contextvar so per-file LLM iteration inside the reviewer
     # agents (LLMPerFileReviewer._run_repo) can emit `file_progress`
@@ -512,6 +537,7 @@ async def _run_repo_review(
                 await progress_log_task
         if snapshot_dir is not None:
             cleanup_snapshot(snapshot_dir)
+        app.state.active_reviews.unregister(thread_id)
 
 
 async def _persist_review(app: FastAPI, state: ReviewState) -> None:
@@ -827,19 +853,20 @@ async def _persist_state_from_checkpointer(app: FastAPI, thread_id: str) -> None
 def create_test_app(
     *,
     graph,
-    github,
+    github=None,
     store: ChatStore | None = None,
     hub: ChatHub | None = None,
     langfuse_callback=None,
     reports_dir: Path | None = None,
     progress_store: ProgressStore | None = None,
+    active_reviews: ActiveReviewsRegistry | None = None,
 ) -> FastAPI:
     """Build a test-mode FastAPI app with pre-injected dependencies.
 
-    Tests construct mocks for `graph` and `github` and pass them here. No
-    lifespan is registered, so settings/validation/Postgres don't activate.
-    `store`, `hub`, `langfuse_callback`, `reports_dir`, and `progress_store`
-    default to disabled/fresh.
+    Tests construct mocks for `graph` (and optionally `github`) and pass
+    them here. No lifespan is registered, so settings/validation/Postgres
+    don't activate. `store`, `hub`, `langfuse_callback`, `reports_dir`,
+    `progress_store`, and `active_reviews` default to disabled/fresh.
     """
     app = FastAPI(title="ia-reviewer-test")
     app.state.graph = graph
@@ -847,6 +874,7 @@ def create_test_app(
     app.state.chat_store = store or ChatStore()
     app.state.chat_hub = hub or ChatHub()
     app.state.progress_store = progress_store or ProgressStore()
+    app.state.active_reviews = active_reviews or ActiveReviewsRegistry()
     app.state.langfuse_callback = langfuse_callback
     app.state.reports_dir = reports_dir or Path(settings.REPORTS_DIR)
     _register_routes(app)
@@ -918,6 +946,7 @@ def _build_app() -> FastAPI:
             app.state.chat_store = ChatStore(max_threads=cap)
             app.state.chat_hub = ChatHub()
             app.state.progress_store = ProgressStore(max_threads=cap)
+            app.state.active_reviews = ActiveReviewsRegistry()
             app.state.reports_dir = reports_dir
             app.state.langfuse_callback = get_langfuse_callback()
             # Open the ReviewStore against the same Postgres if available.
