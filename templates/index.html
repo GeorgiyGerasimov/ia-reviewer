@@ -62,6 +62,17 @@
 
             /* Button text on a dark accent background */
             --on-accent: #ffffff;
+
+            /* Aliases used by `.file-progress` / `.active-reviews` /
+               other newer components. Older blocks use `--text` / `--muted`
+               directly; the two-name vocabulary was an accidental drift.
+               These aliases inherit from the canonical vars so the dark
+               theme override below applies transitively. Caught by
+               `tests/integration/test_ui_template_static_checks.py`
+               (`test_all_css_vars_are_defined`). */
+            --text-primary: var(--text);
+            --text-secondary: var(--muted);
+            --radius-sm: 6px;
         }
 
         /* Dark theme — opt-in via [data-theme="dark"] on <html>. JS
@@ -502,11 +513,17 @@
         /* ── per-file scan progress (between workflow + past reviews) ─ */
 
         .file-progress {
-            background: var(--surface-elevated);
+            /* Matches `.workflow` / `.past-reviews` for visual unity in
+               the left sidebar. Previously used `--radius-md` (an
+               undefined custom prop → fell back to 0 → square corners)
+               and `--surface-elevated` (different background than the
+               other two panels). The double-spacing of `margin-bottom`
+               + parent `<aside>`'s `gap: 1.5rem` was also visible —
+               only the parent gap is needed. */
             border: 1px solid var(--border);
-            border-radius: var(--radius-md);
-            padding: 12px 14px;
-            margin-bottom: 16px;
+            border-radius: 12px;
+            background: var(--bg);
+            padding: 0.9rem 1.1rem;
             font-size: 12px;
         }
 
@@ -640,11 +657,13 @@
         /* ── active reviews list (above past reviews) ────────────── */
 
         .active-reviews {
-            background: var(--surface-elevated);
+            /* Matches `.workflow` / `.past-reviews`. See `.file-progress`
+               above — same `--radius-md` / `--surface-elevated` /
+               double-margin trio fixed here. */
             border: 1px solid var(--border);
-            border-radius: var(--radius-md);
-            padding: 12px 14px;
-            margin-bottom: 16px;
+            border-radius: 12px;
+            background: var(--bg);
+            padding: 0.9rem 1.1rem;
         }
 
         .active-reviews-header {
@@ -1016,6 +1035,7 @@
                         </div>
                         <div class="wf-step" data-node="injection_review"><span class="dot"></span>Injection</div>
                         <div class="wf-step" data-node="owasp_review"><span class="dot"></span>OWASP Top 10</div>
+                        <div class="wf-step" data-node="configuration_review"><span class="dot"></span>Configuration</div>
                     </div>
                     <li class="wf-step" data-node="review_decision"><span class="dot"></span>Review decision</li>
                     <li class="wf-step" data-node="aggregate_results"><span class="dot"></span>Aggregate</li>
@@ -1287,10 +1307,30 @@
                 const r = await fetch("/reviews/active");
                 if (!r.ok) return;
                 const items = await r.json();
-                renderActiveReviews(items);
+                try {
+                    renderActiveReviews(items);
+                } catch (renderErr) {
+                    // Don't let a render bug silently hide the whole
+                    // panel — log loudly and degrade to a minimal text
+                    // list so the operator at least sees their reviews.
+                    console.error("renderActiveReviews failed:", renderErr, "items:", items);
+                    _renderActiveReviewsFallback(items);
+                }
             } catch (_) {
                 // Network blip — leave whatever's rendered.
             }
+        }
+
+        function _renderActiveReviewsFallback(items) {
+            if (!items || items.length === 0) {
+                activeWrap.hidden = true;
+                return;
+            }
+            activeWrap.hidden = false;
+            activeCount.textContent = items.length;
+            activeList.innerHTML = items.map((i) =>
+                `<li class="active-item">${escapeHtml(i.thread_id)} — ${escapeHtml(i.target || "?")}</li>`
+            ).join("");
         }
 
         function renderActiveReviews(items) {
@@ -1522,9 +1562,15 @@
             STEPS.set(el.dataset.node, el);
         });
 
-        // The parallel-fanout container becomes "done" when ALL three security
-        // reviewers have reported. Track which ones we've seen.
-        const SECURITY_NODES = ["dependency_review", "injection_review", "owasp_review"];
+        // The parallel-fanout container becomes "done" when ALL four security
+        // reviewers have reported. Track which ones we've seen. Mirrors
+        // `_SECURITY_NODES` in src/graph/coordinator.py.
+        const SECURITY_NODES = [
+            "dependency_review",
+            "injection_review",
+            "owasp_review",
+            "configuration_review",
+        ];
         const seenSecurity = new Set();
         let reportFetchedForThread = null;
 
@@ -1546,6 +1592,7 @@
             dependency_review: ["review_decision"],
             injection_review: ["review_decision"],
             owasp_review: ["review_decision"],
+            configuration_review: ["review_decision"],
             security_reviewers: ["review_decision"],
             review_decision: ["aggregate_results"],
             // Post-topology-swap order: publish writes the report to disk
@@ -1560,6 +1607,7 @@
         // than leaving them transparent until `__done__`.
         const ACCEPT_PATH_NODES = [
             "dependency_review", "injection_review", "owasp_review",
+            "configuration_review",
             "security_reviewers", "review_decision", "aggregate_results",
             "process_proposal", "publish_report",
         ];
@@ -1608,7 +1656,7 @@
                 // Cascade .active onto the security-reviewer fanout so
                 // the user sees which group is now in flight.
                 ["dependency_review", "injection_review", "owasp_review",
-                 "security_reviewers"].forEach(markActive);
+                 "configuration_review", "security_reviewers"].forEach(markActive);
             } else if (accepted === false) {
                 // Everything on the happy path is dead — gray it now,
                 // and put the spinner on notify_rejection.
@@ -1647,8 +1695,9 @@
             dependency: "Dependency",
             injection: "Injection",
             owasp: "OWASP Top 10",
+            configuration: "Configuration",
         };
-        const ROLE_ORDER = ["dependency", "injection", "owasp"];
+        const ROLE_ORDER = ["dependency", "injection", "owasp", "configuration"];
         const fileProgressState = {};  // role -> {total, paths, done, finished, currentFile, fileStatuses}
 
         function handleFileProgress(ev) {

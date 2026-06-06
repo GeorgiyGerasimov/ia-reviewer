@@ -4,20 +4,21 @@
 
 LangGraph-based multi-agent **security** code review system. Operates in two modes:
 
-- **PR mode** — three specialist reviewers run in parallel against a GitHub Pull Request diff and publish a single consolidated comment on the PR.
-- **Repo mode** — same three specialists scan a full snapshot of a repository at a given ref. Each reviewer iterates **per-file** over its own whitelist of paths (one LLM call per file) and produces a Markdown report saved locally as `reports/<thread_id>.md`; a brief summary with the report link is broadcast into the chat.
+- **PR mode** — four specialist reviewers run in parallel against a GitHub Pull Request diff and publish a single consolidated comment on the PR.
+- **Repo mode** — same four specialists scan a full snapshot of a repository at a given ref. Each reviewer iterates **per-file** over its own whitelist of paths (one LLM call per file) and produces a Markdown report saved locally as `reports/<thread_id>.md`; a brief summary with the report link is broadcast into the chat.
 
-Three specialists:
+Four specialists, each with its own file whitelist + prompt:
 
-- **Dependency** — manifest/lockfile diffs, CVEs, typosquats, supply-chain risk
-- **Injection** — SQLi, command, template, deserialization, path traversal, XSS
-- **OWASP Top 10** — broader sweep covering A01/A02/A04/A05/A07/A08/A09/A10 (A03 and A06 are delegated to the specialists above)
+- **Dependency** — manifest/lockfile diffs, CVEs, typosquats, supply-chain risk. Script-first via OSV.dev (deterministic); one LLM call only for the narrative summary.
+- **Injection** — SQLi, command, template, deserialization, path traversal, XSS. Source code only.
+- **OWASP Top 10** — application-level OWASP (A01 / A02 / A04 / A07-logic / A08 / A09 / A10). Source code only. A03 → Injection; A06 → Dependency; A05 misconfiguration + A07 default-credentials + secret exposure → **Configuration**.
+- **Configuration** — fourth specialist split out of OWASP because misconfig / default-creds / secret findings were overwhelming the OWASP block in real reports. Scans `Dockerfile`, `docker-compose*.yml`, `.env*`, `*.tf`, `nginx.conf`, plus generic INI / TOML / YAML / properties. Prompt focused on misconfigurations, weak defaults, exposed secrets, container/IaC hardening, reverse-proxy headers. See `src/agents/configuration.py`.
 
 Architecturally borrows the parallel-reviewers + coordinator pattern from a sibling code-review tool that targeted GitLab + Slack, but ia-reviewer targets **GitHub only**, has **no Slack integration**, and is **security-focused** — there is no architecture / mobile / web / backend specialization.
 
 Key files:
 - `src/graph/state.py` — `ReviewState`, `ReviewRequest` (discriminated by `mode: "pr" | "repo"`), `RepoFile`, `AgentReview` dataclasses. `agent_reviews` uses an `add` reducer so the three security agents can write concurrently. `ReviewState.thread_id` is stamped before invocation so repo-mode publish can write `reports/<thread_id>.md`.
-- `src/graph/coordinator.py` — `build_review_graph(coordinator, dependency, injection, owasp, *, checkpointer=None)` — fan-out from `START` to the three reviewers, join at `aggregate_results`, then `publish_report → END`
+- `src/graph/coordinator.py` — `build_review_graph(coordinator, dependency, injection, owasp, configuration, *, checkpointer=None)` — fan-out from `START` to the four reviewers, join at `review_decision` → `aggregate_results`, then `publish_report → END`
 - `src/agents/base_reviewer.py` — `BaseReviewer` (shared machinery: scope filter, path-match, `_run_pr`, `_parse_response`) plus two sibling base classes that pick a repo-mode strategy: `LLMPerFileReviewer` (one LLM call per matched file — used by Injection / OWASP) and `ScriptedScannerReviewer` (subclass owns repo-mode entirely — used by Dependency). Subclassing `BaseReviewer` directly without overriding `_run_repo` raises `NotImplementedError` so the omission is loud.
 - `src/agents/report_renderer.py` — pure-render module (no I/O). `ReportRenderer.render_review`, `render_rejection`, `render_exploit_sibling`, `exploit_artifact_filename`, `splice_tldr`. `CoordinatorAgent` delegates here; tests assert on Markdown without spinning up a graph or a tempdir. **Report layout** (deterministic, no LLM): per-role findings are sorted `critical → major → minor → info`; a `### Summary` table with severity × role × Total counts is emitted right after the `**Overall severity:**` header when any findings exist; a cross-cutting `### Critical findings (N)` callout precedes the per-role sections when `N > 0`. Both blocks are dropped when empty so non-critical reports stay tight. `splice_tldr(body, text)` inserts (or idempotently REPLACES) a `### TL;DR` block between the overall-severity header and the Summary table — used by `ReportFormatter` and re-applied by `finalize_exploits` on each re-render.
 - `src/agents/report_formatter.py` — optional LLM-copywriter polish for the report. Runs as the `format_report` graph node between `aggregate_results` and `publish_report`. **Off by default** (`settings.ENABLE_REPORT_FORMATTER=False`): node short-circuits to `{}`, no LLM call. When ON and findings exist: builds a tight findings-only prompt (no free-form summaries leak in), asks the LLM for 2–3 paragraphs, splices via `ReportRenderer.splice_tldr`. Hard-rules in the prompt: do not invent files / CVE ids / severities; do not add findings; no JSON, no fences. Hard cap on response length (`REPORT_FORMATTER_MAX_CHARS=2000`). **Fail-soft on everything**: any exception, empty response, or oversized response → returns `{}`, deterministic report from aggregate stays the published version. The TL;DR text is also written to `state.report_tldr` so `finalize_exploits` can re-splice after the post-exploit re-render. **Optional inline LLMJudge gate** (`settings.FORMATTER_JUDGE_CHECK=True`): every generated TL;DR is graded by `LLMJudge` against a 4-criterion formatter rubric (`tldr_only_real_files`, `tldr_only_real_cves`, `tldr_respects_severity`, `tldr_no_invented_findings`) — the side-by-side eval doc gives the judge both the findings ground-truth and the proposed TL;DR. **Fail-CLOSED for the gate**: judge says `passed=False` OR judge call errors → TL;DR dropped, deterministic report wins. This is the "judge inline in the graph" production pattern of `docs/judge-in-production.md`, distinct from the offline CLI use of `src/evals/judge_report.py`.
@@ -125,7 +126,7 @@ START → validate_request
             ├──→ notify_rejection ──→ END                          (reject)
             └──→ retrieve_past_context                              (accept — RAG step)
                        ↓
-                [dependency_review, injection_review, owasp_review]   (parallel)
+                [dependency_review, injection_review, owasp_review, configuration_review]   (parallel)
                        ↓ fan-in
                 review_decision
                        ↓ conditional

@@ -37,6 +37,7 @@ _ROLE_LABELS = {
     "dependency": "Dependencies",
     "injection": "Injection",
     "owasp": "OWASP Top 10",
+    "configuration": "Configuration",
 }
 
 # Numeric ordering for "overall severity = max(per-reviewer severity)".

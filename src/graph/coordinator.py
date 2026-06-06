@@ -2,6 +2,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
+from src.agents.configuration import ConfigurationReviewer
 from src.agents.coordinator import CoordinatorAgent
 from src.agents.dependency import DependencyReviewer
 from src.agents.exploit_proposal import ExploitProposalAgent, route_after_proposal
@@ -14,7 +15,15 @@ from src.agents.validator import RequestValidator
 from src.graph.state import ReviewState
 from src.utils.node_timing import timed_node
 
-_SECURITY_NODES = ("dependency_review", "injection_review", "owasp_review")
+# Four parallel specialists. Order here is the fan-out order in the
+# graph (and the column order in the Summary table — see
+# `report_renderer._render_summary_table`).
+_SECURITY_NODES = (
+    "dependency_review",
+    "injection_review",
+    "owasp_review",
+    "configuration_review",
+)
 
 
 def route_after_validation(state: ReviewState) -> str:
@@ -51,6 +60,7 @@ def build_review_graph(
     dependency: DependencyReviewer | None = None,
     injection: InjectionReviewer | None = None,
     owasp: OWASPTop10Reviewer | None = None,
+    configuration: ConfigurationReviewer | None = None,
     exploit_proposal: ExploitProposalAgent | None = None,
     past_context: PastContextAgent | None = None,
     report_formatter: ReportFormatter | None = None,
@@ -63,7 +73,7 @@ def build_review_graph(
     Topology:
         START → validate_request
         validate_request ──cond──→ notify_rejection → END                  (reject)
-                          ──cond──→ {dep, injection, owasp}_review         (accept, parallel)
+                          ──cond──→ {dep, injection, owasp, configuration}_review  (accept, parallel)
                                             ↓ fan-in
                                     review_decision
                                             ↓ cond
@@ -99,6 +109,7 @@ def build_review_graph(
     dependency = dependency or DependencyReviewer(github=github)
     injection = injection or InjectionReviewer(github=github)
     owasp = owasp or OWASPTop10Reviewer(github=github)
+    configuration = configuration or ConfigurationReviewer(github=github)
     exploit_proposal = exploit_proposal or ExploitProposalAgent(
         interrupts_enabled=interrupts_enabled,
     )
@@ -125,6 +136,10 @@ def build_review_graph(
     graph.add_node("dependency_review", timed_node("dependency_review")(dependency.run))
     graph.add_node("injection_review", timed_node("injection_review")(injection.run))
     graph.add_node("owasp_review", timed_node("owasp_review")(owasp.run))
+    graph.add_node(
+        "configuration_review",
+        timed_node("configuration_review")(configuration.run),
+    )
     graph.add_node("review_decision", timed_node("review_decision")(review_decision.run))
     graph.add_node("aggregate_results", timed_node("aggregate_results")(coordinator.aggregate))
     graph.add_node("format_report", timed_node("format_report")(report_formatter.run))

@@ -57,7 +57,12 @@ def test_retrieve_past_context_fans_out_to_all_reviewers():
         edge.target for edge in graph.get_graph().edges
         if edge.source == "retrieve_past_context"
     }
-    expected = {"dependency_review", "injection_review", "owasp_review"}
+    expected = {
+        "dependency_review",
+        "injection_review",
+        "owasp_review",
+        "configuration_review",
+    }
     assert expected.issubset(rag_successors), (
         f"retrieve_past_context should fan out to {expected}; got {rag_successors}"
     )

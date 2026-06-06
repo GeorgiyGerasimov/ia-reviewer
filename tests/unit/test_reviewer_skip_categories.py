@@ -118,12 +118,16 @@ async def test_injection_skips_docs(mocker, tmp_path):
     assert "README.md" not in paths
 
 
-# ── OWASP: skip TEST + DOCS + VENDORED + GENERATED, keep INFRA ─────────
+# ── OWASP: skip TEST + DOCS + INFRA + VENDORED + GENERATED ────────────
+# After ConfigurationReviewer was split out (4th specialist), OWASP no
+# longer owns the infra/IaC surface — those files go to Configuration.
+# Overlap would mean every misconfig finding gets logged twice.
 
 
-async def test_owasp_keeps_infra_files(mocker, tmp_path):
-    """OWASP Top 10 covers A05 (misconfiguration) — Dockerfiles,
-    docker-compose, k8s manifests are exactly where this lives."""
+async def test_owasp_skips_infra_files(mocker, tmp_path):
+    """OWASP Top 10 is now SOURCE CODE ONLY. Dockerfile / compose / k8s
+    are ConfigurationReviewer's territory (see test_configuration_reviewer
+    + test_reviewer_path_filters). Confirm OWASP no longer scans them."""
     state = _make_state([
         "src/middleware.py",
         "Dockerfile",
@@ -142,10 +146,14 @@ async def test_owasp_keeps_infra_files(mocker, tmp_path):
         e["path"] for e in store.get("tid")
         if e.get("type") == "file_progress" and e.get("state") == "file_done"
     }
+    # Source path still scanned
     assert "src/middleware.py" in paths
-    assert "Dockerfile" in paths
-    assert "docker-compose.yml" in paths
-    assert "k8s/deployment.yaml" in paths
+    # Infra files no longer touched by OWASP (PATH_PATTERNS dropped
+    # `Dockerfile`/`*.yml`/etc.; SKIP_CATEGORIES also blocks INFRA as
+    # belt-and-braces — either alone is enough).
+    assert "Dockerfile" not in paths
+    assert "docker-compose.yml" not in paths
+    assert "k8s/deployment.yaml" not in paths
 
 
 async def test_owasp_skips_test_and_docs(mocker, tmp_path):
