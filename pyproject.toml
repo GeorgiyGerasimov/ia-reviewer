@@ -46,6 +46,10 @@ dev = [
     "pyyaml>=6.0",
     "ruff>=0.7.0",
     "mypy>=1.13.0",
+    # Tier 3 UI tests (`tests/e2e/playwright/`). Optional locally
+    # (skip the dir if you don't want to install Chromium); CI
+    # installs the browser via `playwright install chromium --with-deps`.
+    "pytest-playwright>=0.5.0",
 ]
 
 [tool.ruff]

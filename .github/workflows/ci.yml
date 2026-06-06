@@ -45,8 +45,11 @@ jobs:
       - name: Ruff (lint)
         run: ruff check src/ tests/ main.py benchmarks/
 
-      - name: Pytest
-        run: pytest -v --tb=short
+      - name: Pytest (unit + integration + non-playwright e2e)
+        # Playwright suite lives in its own directory and has its own
+        # CI job below (needs a browser, runs longer). Exclude it here
+        # to keep this job fast and hermetic.
+        run: pytest -v --tb=short --ignore=tests/e2e/playwright
 
       # Two benchmark gates. The `judge` and `judge-formatter` suites
       # are intentionally NOT gated here — they're calibration sets
@@ -59,3 +62,35 @@ jobs:
 
       - name: Benchmark — validator (--mock-llm, pure-code floor 80%)
         run: python -m benchmarks.run validator --mock-llm --min-success-rate 0.80
+
+  playwright:
+    name: UI e2e (Playwright)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Don't block on the main `test` job — these are slower (browser
+    # startup), and if Playwright is flaky for env reasons we still
+    # want the lint+pytest signal to land cleanly. The PR's overall
+    # mergeability decision is up to GitHub branch-protection rules.
+    needs: []
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Install headless Chromium (+ OS deps)
+        # `--with-deps` pulls libnss3 / libatk-bridge / fonts / etc.
+        # via apt — required on fresh GH runners.
+        run: playwright install chromium --with-deps
+
+      - name: Pytest (Playwright suite only)
+        run: pytest tests/e2e/playwright/ -v --tb=short
