@@ -6,7 +6,12 @@ from src.graph.state import ALLOWED_SCOPE_ROLES, AgentReview, ReviewState
 
 
 def test_allowed_scope_roles_are_security_only():
-    assert ALLOWED_SCOPE_ROLES == ("dependency", "injection", "owasp")
+    assert ALLOWED_SCOPE_ROLES == (
+        "dependency",
+        "injection",
+        "owasp",
+        "configuration",
+    )
 
 
 def test_review_state_defaults_are_empty():

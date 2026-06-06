@@ -37,15 +37,19 @@ def test_injection_reviewer_path_filter():
 
 
 def test_owasp_reviewer_path_filter():
-    """OWASP reviewer: source AND infra/config (Dockerfile, k8s, .env, .yaml)."""
-    # Source overlap with injection — both reviewers see real code
+    """OWASP reviewer (after Configuration was split out): source files
+    only. Infra / IaC / env moved to ConfigurationReviewer — checked
+    separately in `test_configuration_reviewer.py`."""
+    # Source — same surface as Injection
     assert OWASPTop10Reviewer._matches_path("src/foo.go")
     assert OWASPTop10Reviewer._matches_path("server.js")
-    # OWASP-specific additions: infra-as-code, configs, env
-    assert OWASPTop10Reviewer._matches_path("Dockerfile")
-    assert OWASPTop10Reviewer._matches_path("k8s/deploy.yaml")
-    assert OWASPTop10Reviewer._matches_path("main.tf")
-    assert OWASPTop10Reviewer._matches_path(".env.production")
+    assert OWASPTop10Reviewer._matches_path("controllers/users.py")
+    # Config / IaC / env explicitly NOT in scope here anymore —
+    # ConfigurationReviewer handles them; overlap = duplicate findings.
+    assert not OWASPTop10Reviewer._matches_path("Dockerfile")
+    assert not OWASPTop10Reviewer._matches_path("k8s/deploy.yaml")
+    assert not OWASPTop10Reviewer._matches_path("main.tf")
+    assert not OWASPTop10Reviewer._matches_path(".env.production")
     # Still out of scope: docs and manifests
     assert not OWASPTop10Reviewer._matches_path("README.md")
     assert not OWASPTop10Reviewer._matches_path("package.json")

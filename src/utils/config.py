@@ -82,6 +82,7 @@ class Settings(BaseSettings):
     # embedded creds → `INJECTION_SKIP_CATEGORIES=`).
     INJECTION_SKIP_CATEGORIES: str = ""
     OWASP_SKIP_CATEGORIES: str = ""
+    CONFIGURATION_SKIP_CATEGORIES: str = ""
 
     # Per-agent fan-out: how many files a single LLMPerFileReviewer
     # processes concurrently against the gateway. Each per-file call is

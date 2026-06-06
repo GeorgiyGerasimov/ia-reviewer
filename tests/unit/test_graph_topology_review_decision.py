@@ -27,7 +27,12 @@ def test_reviewers_route_into_review_decision_not_aggregate_directly():
     `*_review → review_decision`. The new node owns the fan-in join."""
     graph = build_review_graph()
     edges = graph.get_graph().edges
-    for reviewer in ("dependency_review", "injection_review", "owasp_review"):
+    for reviewer in (
+        "dependency_review",
+        "injection_review",
+        "owasp_review",
+        "configuration_review",
+    ):
         targets = {e.target for e in edges if e.source == reviewer}
         assert targets == {"review_decision"}, (
             f"{reviewer} should route to review_decision; got {targets}"
@@ -40,7 +45,13 @@ def test_review_decision_routes_to_reviewers_or_aggregate():
     graph = build_review_graph()
     edges = graph.get_graph().edges
     targets = {e.target for e in edges if e.source == "review_decision"}
-    expected = {"dependency_review", "injection_review", "owasp_review", "aggregate_results"}
+    expected = {
+        "dependency_review",
+        "injection_review",
+        "owasp_review",
+        "configuration_review",
+        "aggregate_results",
+    }
     assert expected.issubset(targets), (
         f"review_decision should reach {expected}; got {targets}"
     )

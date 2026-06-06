@@ -1016,6 +1016,7 @@
                         </div>
                         <div class="wf-step" data-node="injection_review"><span class="dot"></span>Injection</div>
                         <div class="wf-step" data-node="owasp_review"><span class="dot"></span>OWASP Top 10</div>
+                        <div class="wf-step" data-node="configuration_review"><span class="dot"></span>Configuration</div>
                     </div>
                     <li class="wf-step" data-node="review_decision"><span class="dot"></span>Review decision</li>
                     <li class="wf-step" data-node="aggregate_results"><span class="dot"></span>Aggregate</li>
@@ -1522,9 +1523,15 @@
             STEPS.set(el.dataset.node, el);
         });
 
-        // The parallel-fanout container becomes "done" when ALL three security
-        // reviewers have reported. Track which ones we've seen.
-        const SECURITY_NODES = ["dependency_review", "injection_review", "owasp_review"];
+        // The parallel-fanout container becomes "done" when ALL four security
+        // reviewers have reported. Track which ones we've seen. Mirrors
+        // `_SECURITY_NODES` in src/graph/coordinator.py.
+        const SECURITY_NODES = [
+            "dependency_review",
+            "injection_review",
+            "owasp_review",
+            "configuration_review",
+        ];
         const seenSecurity = new Set();
         let reportFetchedForThread = null;
 
@@ -1546,6 +1553,7 @@
             dependency_review: ["review_decision"],
             injection_review: ["review_decision"],
             owasp_review: ["review_decision"],
+            configuration_review: ["review_decision"],
             security_reviewers: ["review_decision"],
             review_decision: ["aggregate_results"],
             // Post-topology-swap order: publish writes the report to disk
@@ -1560,6 +1568,7 @@
         // than leaving them transparent until `__done__`.
         const ACCEPT_PATH_NODES = [
             "dependency_review", "injection_review", "owasp_review",
+            "configuration_review",
             "security_reviewers", "review_decision", "aggregate_results",
             "process_proposal", "publish_report",
         ];
@@ -1647,8 +1656,9 @@
             dependency: "Dependency",
             injection: "Injection",
             owasp: "OWASP Top 10",
+            configuration: "Configuration",
         };
-        const ROLE_ORDER = ["dependency", "injection", "owasp"];
+        const ROLE_ORDER = ["dependency", "injection", "owasp", "configuration"];
         const fileProgressState = {};  // role -> {total, paths, done, finished, currentFile, fileStatuses}
 
         function handleFileProgress(ev) {

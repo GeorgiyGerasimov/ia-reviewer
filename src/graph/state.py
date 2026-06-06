@@ -6,6 +6,11 @@ ALLOWED_SCOPE_ROLES: tuple[str, ...] = (
     "dependency",
     "injection",
     "owasp",
+    # Configuration was split out of OWASP — see CLAUDE.md "Specialists"
+    # section and `src/agents/configuration.py`. A05 / A07 / secret-
+    # exposure surface previously claimed by the OWASP prompt is now
+    # ConfigurationReviewer's territory.
+    "configuration",
 )
 
 

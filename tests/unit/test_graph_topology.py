@@ -16,7 +16,14 @@ def _stub_model_factory():
 
 def test_graph_has_all_security_nodes():
     graph = build_review_graph()
-    expected = {"dependency_review", "injection_review", "owasp_review", "aggregate_results", "publish_report"}
+    expected = {
+        "dependency_review",
+        "injection_review",
+        "owasp_review",
+        "configuration_review",
+        "aggregate_results",
+        "publish_report",
+    }
     assert expected.issubset(set(graph.nodes))
 
 

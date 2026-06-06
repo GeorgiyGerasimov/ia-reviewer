@@ -83,15 +83,17 @@ async def test_run_embeds_query_and_retrieves_for_each_role(embedder, store):
 
     assert "past_findings_by_role" in update
     by_role = update["past_findings_by_role"]
-    assert set(by_role.keys()) == {"dependency", "injection", "owasp"}
+    assert set(by_role.keys()) == {"dependency", "injection", "owasp", "configuration"}
     assert by_role["dependency"][0]["issue"] == "past-dependency-1"
     assert by_role["injection"][0]["issue"] == "past-injection-1"
     assert by_role["owasp"][0]["issue"] == "past-owasp-1"
 
     # Embedder called once (single query embedding, reused across roles).
     assert embedder.embed.await_count == 1
-    # Three retrieve calls, one per role.
-    assert store.retrieve_similar.await_count == 3
+    # One retrieve call per role — four since ConfigurationReviewer
+    # was added as a fourth specialist (PR splitting A05 / secret
+    # surface out of OWASP).
+    assert store.retrieve_similar.await_count == 4
 
 
 async def test_run_uses_pr_url_as_target_in_pr_mode(embedder, store):

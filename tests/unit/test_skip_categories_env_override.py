@@ -44,9 +44,13 @@ def test_injection_keeps_code_default_when_env_blank(mocker):
 def test_owasp_keeps_code_default_when_env_blank(mocker):
     mocker.patch("src.agents.owasp.settings.OWASP_SKIP_CATEGORIES", "")
     r = OWASPTop10Reviewer()
+    # After ConfigurationReviewer was split out, OWASP also skips INFRA
+    # (otherwise duplicates Configuration's findings on any infra file
+    # that PATH_PATTERNS happens to still match).
     assert frozenset({
         FileCategory.TEST,
         FileCategory.DOCS,
+        FileCategory.INFRA,
         FileCategory.VENDORED,
         FileCategory.GENERATED,
     }) == r.SKIP_CATEGORIES
