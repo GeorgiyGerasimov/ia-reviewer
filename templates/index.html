@@ -1617,7 +1617,7 @@
                 // Cascade .active onto the security-reviewer fanout so
                 // the user sees which group is now in flight.
                 ["dependency_review", "injection_review", "owasp_review",
-                 "security_reviewers"].forEach(markActive);
+                 "configuration_review", "security_reviewers"].forEach(markActive);
             } else if (accepted === false) {
                 // Everything on the happy path is dead — gray it now,
                 // and put the spinner on notify_rejection.
