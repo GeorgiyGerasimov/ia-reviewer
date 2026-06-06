@@ -6,6 +6,7 @@ won't reach already-compiled nodes — see the testing-principles skill. Use
 `build_test_graph()` to inject mock agents directly.
 """
 
+from src.agents.configuration import ConfigurationReviewer
 from src.agents.coordinator import CoordinatorAgent
 from src.agents.dependency import DependencyReviewer
 from src.agents.injection import InjectionReviewer
@@ -21,6 +22,7 @@ def build_test_graph(
     dependency: DependencyReviewer | None = None,
     injection: InjectionReviewer | None = None,
     owasp: OWASPTop10Reviewer | None = None,
+    configuration: ConfigurationReviewer | None = None,
     checkpointer=None,
 ):
     return build_review_graph(
@@ -29,5 +31,6 @@ def build_test_graph(
         dependency=dependency,
         injection=injection,
         owasp=owasp,
+        configuration=configuration,
         checkpointer=checkpointer,
     )

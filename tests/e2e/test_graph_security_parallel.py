@@ -37,10 +37,11 @@ class _FakeReviewer:
         return {"agent_reviews": [review]}
 
 
-async def test_graph_fans_out_to_three_agents_and_publishes(mocker, pr_request):
+async def test_graph_fans_out_to_four_agents_and_publishes(mocker, pr_request):
     dep = _FakeReviewer("dependency", "minor")
     inj = _FakeReviewer("injection", "critical")
     owasp = _FakeReviewer("owasp", "info")
+    cfg = _FakeReviewer("configuration", "info")
 
     github = mocker.AsyncMock()
     github.post_pr_comment.return_value = 777
@@ -52,6 +53,7 @@ async def test_graph_fans_out_to_three_agents_and_publishes(mocker, pr_request):
         dependency=dep,
         injection=inj,
         owasp=owasp,
+        configuration=cfg,
     )
 
     final = await graph.ainvoke(ReviewState(request=pr_request))
@@ -59,14 +61,16 @@ async def test_graph_fans_out_to_three_agents_and_publishes(mocker, pr_request):
     assert dep.calls == 1
     assert inj.calls == 1
     assert owasp.calls == 1
+    assert cfg.calls == 1
 
     roles = {r.role for r in final["agent_reviews"]}
-    assert roles == {"dependency", "injection", "owasp"}
+    assert roles == {"dependency", "injection", "owasp", "configuration"}
 
     report = final["final_report"]
     assert "Dependencies — minor" in report
     assert "Injection — critical" in report
     assert "OWASP Top 10 — info" in report
+    assert "Configuration — info" in report
     assert "**Overall severity:** critical" in report
 
     github.post_pr_comment.assert_awaited_once()
@@ -78,6 +82,7 @@ async def test_graph_persists_via_memory_checkpointer(mocker, pr_request):
     dep = _FakeReviewer("dependency")
     inj = _FakeReviewer("injection")
     owasp = _FakeReviewer("owasp")
+    cfg = _FakeReviewer("configuration")
     github = mocker.AsyncMock()
     github.post_pr_comment.return_value = 1
 
@@ -88,6 +93,7 @@ async def test_graph_persists_via_memory_checkpointer(mocker, pr_request):
         dependency=dep,
         injection=inj,
         owasp=owasp,
+        configuration=cfg,
         checkpointer=saver,
     )
 
@@ -96,4 +102,5 @@ async def test_graph_persists_via_memory_checkpointer(mocker, pr_request):
 
     snapshot = graph.get_state(config)
     assert snapshot.values["completed"] is True
-    assert len(snapshot.values["agent_reviews"]) == 3
+    # Four parallel reviewers — see `_SECURITY_NODES` in coordinator.py.
+    assert len(snapshot.values["agent_reviews"]) == 4

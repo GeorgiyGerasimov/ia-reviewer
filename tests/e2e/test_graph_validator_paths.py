@@ -52,10 +52,11 @@ def _request() -> ReviewRequest:
     )
 
 
-async def test_accept_path_runs_three_reviewers_and_publishes(mocker):
+async def test_accept_path_runs_four_reviewers_and_publishes(mocker):
     dep = _FakeReviewer("dependency")
     inj = _FakeReviewer("injection")
     owasp = _FakeReviewer("owasp")
+    cfg = _FakeReviewer("configuration")
     validator = _StubValidator(accepted=True, category="accepted")
 
     github = mocker.AsyncMock()
@@ -68,13 +69,16 @@ async def test_accept_path_runs_three_reviewers_and_publishes(mocker):
         dependency=dep,
         injection=inj,
         owasp=owasp,
+        configuration=cfg,
     )
 
     final = await graph.ainvoke(ReviewState(request=_request()))
 
     assert validator.calls == 1
-    assert dep.calls == 1 and inj.calls == 1 and owasp.calls == 1
-    assert {r.role for r in final["agent_reviews"]} == {"dependency", "injection", "owasp"}
+    assert dep.calls == 1 and inj.calls == 1 and owasp.calls == 1 and cfg.calls == 1
+    assert {r.role for r in final["agent_reviews"]} == {
+        "dependency", "injection", "owasp", "configuration",
+    }
     github.post_pr_comment.assert_awaited_once()
     body = github.post_pr_comment.await_args.args[1]
     assert "Security review" in body
@@ -87,6 +91,7 @@ async def test_reject_path_skips_reviewers_and_posts_rejection(mocker):
     dep = _FakeReviewer("dependency")
     inj = _FakeReviewer("injection")
     owasp = _FakeReviewer("owasp")
+    cfg = _FakeReviewer("configuration")
     validator = _StubValidator(accepted=False, category="docs_only", reason="docs only")
 
     github = mocker.AsyncMock()
@@ -99,12 +104,13 @@ async def test_reject_path_skips_reviewers_and_posts_rejection(mocker):
         dependency=dep,
         injection=inj,
         owasp=owasp,
+        configuration=cfg,
     )
 
     final = await graph.ainvoke(ReviewState(request=_request()))
 
     assert validator.calls == 1
-    assert dep.calls == 0 and inj.calls == 0 and owasp.calls == 0
+    assert dep.calls == 0 and inj.calls == 0 and owasp.calls == 0 and cfg.calls == 0
     assert final["agent_reviews"] == []
     github.post_pr_comment.assert_awaited_once()
     body = github.post_pr_comment.await_args.args[1]
