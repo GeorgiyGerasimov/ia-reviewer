@@ -448,6 +448,7 @@ class LLMPerFileReviewer(BaseReviewer):
         highest_severity = "info"
         failed_count = 0
         processed_count = 0
+        skipped_empty_count = 0
 
         for repo_file, outcome in zip(matched, per_file_results, strict=True):
             if isinstance(outcome, BaseException):
@@ -460,7 +461,15 @@ class LLMPerFileReviewer(BaseReviewer):
                 failed_count += 1
                 continue
             if outcome is None:
-                # empty file or read failure — already logged inside _read_snapshot_file
+                # Empty / unreadable file — `_read_snapshot_file` returned
+                # "" so `_process_one` short-circuited without an LLM call.
+                # Real-world example: zero-byte `__init__.py` files. The
+                # per-file `file_done` envelope still went out (live UI
+                # counter ticks up), so the terminal envelope MUST account
+                # for them too — otherwise `processed + failed` < `total`
+                # and the UI's "done (N/total)" label shows a fraction
+                # that doesn't reconcile.
+                skipped_empty_count += 1
                 continue
             processed_count += 1
             parsed = outcome["parsed"]
@@ -473,12 +482,14 @@ class LLMPerFileReviewer(BaseReviewer):
         # Terminal envelope for the UI's per-file progress block.
         # Operators see the per-file bar switch to its "done" state
         # without waiting for the workflow-level node_complete event.
+        # Invariant: processed + failed + skipped_empty == total.
         await maybe_emit({
             "type": "file_progress",
             "role": self.role,
             "state": "finished",
             "processed": processed_count,
             "failed": failed_count,
+            "skipped_empty": skipped_empty_count,
             "findings_total": len(all_findings),
             "total": total_files,
         })

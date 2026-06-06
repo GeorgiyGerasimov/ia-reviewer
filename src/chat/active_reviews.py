@@ -19,8 +19,9 @@ thread_ids do not contend.
 
 from __future__ import annotations
 
+import asyncio
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -37,6 +38,11 @@ class ReviewSummary:
     target: str             # PR URL or repo URL
     ref: str = ""           # repo-mode only; empty for PR-mode
     started_at: float = 0.0  # monotonic clock seconds since registry start
+    # Handle to the asyncio.Task running the review. Attached via
+    # `attach_task(...)` shortly after registration so a Stop button in
+    # the UI can call `.cancel()` on it. Excluded from the JSON view
+    # (`to_dict`) — internal lifecycle handle, not user-facing data.
+    task: asyncio.Task | None = field(default=None, repr=False, compare=False)
 
     def to_dict(self) -> dict:
         """JSON-serialisable view consumed by the UI poll. Adds
@@ -80,8 +86,48 @@ class ActiveReviewsRegistry:
     def unregister(self, thread_id: str) -> None:
         """Remove `thread_id`. Safe to call for unknown ids — used in
         the orchestrator's `finally:` block, which fires even if
-        register was skipped due to an exception earlier in the flow."""
+        register was skipped due to an exception earlier in the flow.
+        Also drops the task handle if one was attached."""
         self._entries.pop(thread_id, None)
+
+    def attach_task(self, thread_id: str, task: asyncio.Task) -> None:
+        """Bind the underlying `asyncio.Task` for an already-registered
+        review. Called by the orchestrator immediately after
+        `asyncio.create_task(...)` so the Stop button in the UI has
+        something to cancel.
+
+        Silent no-op for unknown ids — callers should register first,
+        but a lost race shouldn't crash the spawn path."""
+        entry = self._entries.get(thread_id)
+        if entry is not None:
+            entry.task = task
+
+    def get_task(self, thread_id: str) -> asyncio.Task | None:
+        """Return the attached task for `thread_id`, or None if the
+        entry doesn't exist or no task was attached yet."""
+        entry = self._entries.get(thread_id)
+        return entry.task if entry is not None else None
+
+    def cancel(self, thread_id: str) -> bool:
+        """Cancel the running review for `thread_id`.
+
+        Returns True iff a task was attached AND was still running (i.e.
+        the cancellation request was actually delivered). Returns False
+        for unknown ids, for entries with no task attached, and for
+        tasks that have already completed (nothing to cancel).
+
+        The cancellation is cooperative — the task gets a
+        `CancelledError` at the next `await` point. Our review
+        coroutines catch it in `finally:` to run cleanup (snapshot
+        rm, registry unregister, chat broadcast) before exiting.
+        """
+        entry = self._entries.get(thread_id)
+        if entry is None or entry.task is None:
+            return False
+        if entry.task.done():
+            return False
+        entry.task.cancel()
+        return True
 
     def list_active(self) -> list[ReviewSummary]:
         """Snapshot ordered by start time (oldest first). The list is a

@@ -176,6 +176,30 @@ def _register_routes(app: FastAPI) -> None:
         items = [s.to_dict() for s in registry.list_active()]
         return JSONResponse(items, status_code=200)
 
+    @app.post("/reviews/{thread_id}/cancel")
+    async def cancel_active_review(request: Request, thread_id: str) -> JSONResponse:
+        """Stop an in-flight review.
+
+        Backing endpoint for the UI's per-review Stop button. The
+        registry knows the underlying `asyncio.Task` (attached by the
+        spawn path); cancellation is cooperative — the task receives
+        `CancelledError` at the next `await` and runs its `finally:`
+        block (snapshot cleanup, registry unregister, chat broadcast).
+
+        Status codes:
+          * 200 — cancellation request delivered to a running task.
+          * 404 — unknown thread_id, no task attached yet, or task
+            already finished. All three are "nothing to cancel" from
+            the caller's perspective and don't need distinguishing.
+        """
+        registry = request.app.state.active_reviews
+        if not registry.cancel(thread_id):
+            raise HTTPException(status_code=404, detail="no cancellable review")
+        return JSONResponse(
+            {"status": "cancelled", "thread_id": thread_id},
+            status_code=200,
+        )
+
     @app.get("/reviews/{thread_id}")
     async def get_review(request: Request, thread_id: str) -> JSONResponse:
         """Single review + embedded findings. 404 when the row is missing
@@ -220,8 +244,17 @@ def _register_routes(app: FastAPI) -> None:
             )
 
         thread_id = str(uuid.uuid4())
+        registry = request.app.state.active_reviews
         if pr_url:
-            background.add_task(_run_review, request.app, pr_url, scope_raw, thread_id)
+            # Register BEFORE spawning so the Stop button has a target
+            # even if the spawn-to-first-await window is non-zero.
+            # `asyncio.create_task` (not BackgroundTasks) gives us a
+            # handle we can hand to the registry for cancel().
+            registry.register(thread_id, mode="pr", target=pr_url)
+            task = asyncio.create_task(
+                _run_review(request.app, pr_url, scope_raw, thread_id)
+            )
+            registry.attach_task(thread_id, task)
             return JSONResponse(
                 {"status": "started", "thread_id": thread_id, "pr_url": pr_url},
                 status_code=202,
@@ -244,9 +277,13 @@ def _register_routes(app: FastAPI) -> None:
             else (extracted_ref or "HEAD")
         )
 
-        background.add_task(
-            _run_repo_review, request.app, canonical_repo_url, ref, scope_raw, thread_id
+        registry.register(thread_id, mode="repo", target=canonical_repo_url, ref=ref)
+        task = asyncio.create_task(
+            _run_repo_review(
+                request.app, canonical_repo_url, ref, scope_raw, thread_id,
+            )
         )
+        registry.attach_task(thread_id, task)
         return JSONResponse(
             {
                 "status": "started",
@@ -430,7 +467,12 @@ def _trace_config(app: FastAPI, thread_id: str, state: ReviewState | None, trigg
 async def _run_review(app: FastAPI, pr_url: str, scope: list[str], thread_id: str) -> None:
     """Fetch the PR, build initial state, and run the security review graph.
 
-    Runs as a FastAPI BackgroundTask after the 202 response has been sent.
+    Spawned via `asyncio.create_task` from the `/review` endpoint so the
+    caller can hold the task handle in `ActiveReviewsRegistry` for
+    cooperative cancellation (Stop button). Registration into the
+    tracker is done up-front in the endpoint — this coroutine only owns
+    the unregister-on-exit half of the lifecycle.
+
     Uses `astream(mode="updates")` so progress envelopes can be broadcast to
     the chat WebSocket on every node completion (the UI lights up its
     workflow-diagram circles based on these).
@@ -439,11 +481,12 @@ async def _run_review(app: FastAPI, pr_url: str, scope: list[str], thread_id: st
     pending question(s) are surfaced into the chat panel — the user then
     answers via the WebSocket and `_resume_review` carries the resume back
     to the graph.
+
+    On `CancelledError` (Stop button), we broadcast a brief notice into
+    the chat so the user sees the stop took effect, then let
+    `finally:` run the registry cleanup. Persist is skipped — a
+    half-finished state isn't worth the audit row.
     """
-    # Register in the in-flight tracker so the UI's `Active reviews`
-    # poll sees this thread. Done BEFORE the github fetch so even slow
-    # network setup shows the review as "starting".
-    app.state.active_reviews.register(thread_id, mode="pr", target=pr_url)
     try:
         review_request = await app.state.github.fetch_pr(pr_url)
         review_request.scope = scope
@@ -452,6 +495,11 @@ async def _run_review(app: FastAPI, pr_url: str, scope: list[str], thread_id: st
         await _stream_graph_with_progress(app, thread_id, state, config)
         await _broadcast_pending_interrupts(app, thread_id)
         await _persist_review(app, state)
+    except asyncio.CancelledError:
+        logger.info("review %s cancelled by user", thread_id)
+        await _broadcast_cancellation(app, thread_id)
+        # Do NOT re-raise: this coroutine IS the cancelled task, and
+        # swallowing here lets `finally:` run unregister cleanly.
     except Exception as e:
         logger.error("review failed for %s: %s", pr_url, e)
     finally:
@@ -478,12 +526,10 @@ async def _run_repo_review(
     """
     snapshot_dir = None
     progress_log_task: asyncio.Task | None = None
-    # Register in the in-flight tracker so the UI's `Active reviews`
-    # poll sees this thread. Done up front — before clone — so the
-    # UI surfaces "starting" reviews even while git is still working.
-    app.state.active_reviews.register(
-        thread_id, mode="repo", target=repo_url, ref=ref,
-    )
+    # NB: register(...) is done in the `/review` endpoint before the
+    # task is spawned, so the Stop button can address us from the very
+    # first WS poll. This coroutine only owns the unregister-on-exit
+    # half of the lifecycle.
     # Bind a ProgressEmitter for this review's thread_id and install it
     # into the contextvar so per-file LLM iteration inside the reviewer
     # agents (LLMPerFileReviewer._run_repo) can emit `file_progress`
@@ -526,6 +572,11 @@ async def _run_repo_review(
         await _broadcast_pending_interrupts(app, thread_id)
         await _broadcast_repo_completion(app, thread_id)
         await _persist_review(app, state)
+    except asyncio.CancelledError:
+        logger.info("repo review %s cancelled by user", thread_id)
+        await _broadcast_cancellation(app, thread_id)
+        # Do NOT re-raise — see _run_review for the same pattern.
+        # Snapshot cleanup happens in `finally:` regardless.
     except Exception as e:
         logger.error("repo review failed for %s@%s: %s", repo_url, ref, e)
     finally:
@@ -667,6 +718,26 @@ async def _stream_graph_with_progress(app: FastAPI, thread_id: str, state, confi
     done = {"type": "progress", "node": "__done__"}
     app.state.progress_store.append(thread_id, done)
     await app.state.chat_hub.broadcast(thread_id, done)
+
+
+async def _broadcast_cancellation(app: FastAPI, thread_id: str) -> None:
+    """Push a short notice into the chat when the Stop button cancelled
+    this review. Also emits a workflow-level `__cancelled__` progress
+    envelope so the UI can flip its workflow chips to a neutral state
+    (mirrors `__done__` for completions).
+
+    Best-effort: any error broadcasting here must NOT mask the
+    underlying `CancelledError` flow. Caller handles all exceptions.
+    """
+    try:
+        msg = ChatMessage(role="agent", text="Review cancelled by user.")
+        app.state.chat_store.append(thread_id, msg)
+        await app.state.chat_hub.broadcast(thread_id, msg.to_dict())
+        cancelled_event = {"type": "progress", "node": "__cancelled__"}
+        app.state.progress_store.append(thread_id, cancelled_event)
+        await app.state.chat_hub.broadcast(thread_id, cancelled_event)
+    except Exception as e:
+        logger.warning("cancellation broadcast for %s failed: %s", thread_id, e)
 
 
 async def _broadcast_repo_completion(app: FastAPI, thread_id: str) -> None:

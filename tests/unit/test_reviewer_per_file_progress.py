@@ -213,6 +213,82 @@ async def test_failing_file_still_emits_file_done_with_failed_flag(mocker, tmp_p
     assert finished[0]["failed"] == 1
 
 
+# ── empty/unreadable files: must NOT vanish from totals ───────────────────
+
+
+async def test_empty_files_counted_in_terminal_envelope(mocker, tmp_path):
+    """Reality check from production: a real repo has ~10 zero-byte
+    `__init__.py` files. They get a `file_done` envelope (so the UI's
+    counter ticks up live), but the LLM is intentionally skipped — the
+    file body is empty. Before this test, the terminal `finished`
+    envelope reported only `processed + failed`, which dropped the
+    empties on the floor and made the UI flip from
+    `54/54` (live) to `done (44/54)` (after `finished`). The status
+    label said "done" while the bar showed an incomplete fraction.
+
+    Contract: `processed + failed + skipped_empty == total`. The UI
+    multiplexes these three buckets into one progress count so the bar
+    always reads 54/54 on a clean run.
+    """
+    # 3 normal + 2 empty files. Empty files trigger the early-exit path
+    # in `_read_snapshot_file` → `_process_one` returns None → must be
+    # accounted for in `skipped_empty`, not silently dropped.
+    snap = tmp_path / "snap"
+    snap.mkdir()
+    repo_files = []
+    for i in range(3):
+        p = snap / f"f{i}.py"
+        p.write_text(f"def do_{i}(): return {i}\n")
+        repo_files.append(RepoFile(path=f"f{i}.py", content="", size=p.stat().st_size))
+    for j in range(2):
+        p = snap / f"empty{j}.py"
+        p.write_text("")  # 0-byte __init__.py-style file
+        repo_files.append(RepoFile(path=f"empty{j}.py", content="", size=0))
+    state = ReviewState(
+        request=ReviewRequest(
+            mode="repo",
+            repo_url="https://github.com/o/r",
+            ref="main",
+            snapshot_dir=str(snap),
+            repo_files=repo_files,
+        ),
+        thread_id="tid",
+    )
+
+    store = ProgressStore()
+    emitter = ProgressEmitter("tid", store, ChatHub())
+
+    with patch("src.models.factory.ModelFactory.get",
+               return_value=_quick_mock_model(mocker)):
+        from src.models.factory import ModelFactory
+        ModelFactory._instances.clear()
+        reviewer = InjectionReviewer()
+        with use_emitter(emitter):
+            await reviewer._run_repo(state)
+
+    # Every file (incl. empties) must still get a file_done envelope —
+    # otherwise the live counter would stop at 3/5 mid-scan.
+    file_done = [
+        e for e in store.get("tid")
+        if e.get("type") == "file_progress" and e.get("state") == "file_done"
+    ]
+    assert len(file_done) == 5
+
+    # Terminal `finished` must surface all three buckets and they must
+    # reconcile to `total`. UI sums them for the final progress label.
+    finished = [
+        e for e in store.get("tid")
+        if e.get("type") == "file_progress" and e.get("state") == "finished"
+    ]
+    assert len(finished) == 1
+    e = finished[0]
+    assert e["total"] == 5
+    assert e["processed"] == 3        # 3 non-empty files reached the LLM
+    assert e["failed"] == 0
+    assert e["skipped_empty"] == 2    # 2 zero-byte files — short-circuited
+    assert e["processed"] + e["failed"] + e["skipped_empty"] == e["total"]
+
+
 pytestmark = pytest.mark.anyio
 
 

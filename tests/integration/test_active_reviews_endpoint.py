@@ -66,3 +66,51 @@ def test_active_endpoint_drops_unregistered_entries():
     assert r.status_code == 200
     items = r.json()
     assert [it["thread_id"] for it in items] == ["tid-B"]
+
+
+# ── POST /reviews/{thread_id}/cancel — Stop button backing endpoint ────────
+
+
+def test_cancel_endpoint_404_for_unknown_thread():
+    """Unknown thread_id → 404, body has an `error` key. Symmetrical
+    with /reviews/{id} for an unregistered review."""
+    registry = ActiveReviewsRegistry()
+    app = create_test_app(graph=_stub_graph_app(), active_reviews=registry)
+    client = TestClient(app)
+    r = client.post("/reviews/does-not-exist/cancel")
+    assert r.status_code == 404
+
+
+def test_cancel_endpoint_404_when_task_not_attached():
+    """Race: review is registered but the task handle hasn't been
+    attached yet. Cancellation has nothing to act on — 404. (Practically
+    a sub-millisecond window between register() and attach_task() in
+    the spawn path; tested for completeness.)"""
+    registry = ActiveReviewsRegistry()
+    registry.register("tid-no-task", mode="repo", target="https://github.com/o/r")
+    app = create_test_app(graph=_stub_graph_app(), active_reviews=registry)
+    client = TestClient(app)
+    r = client.post("/reviews/tid-no-task/cancel")
+    assert r.status_code == 404
+
+
+def test_cancel_endpoint_returns_200_when_registry_cancels():
+    """Happy path: `registry.cancel(...)` reports True (a task was
+    attached and was running) → endpoint returns 200 + structured body.
+
+    We stub the registry's `cancel()` method directly: the real
+    asyncio-task cancellation contract is covered by
+    `tests/unit/test_active_reviews_cancel.py`. Here we only verify
+    the HTTP-layer plumbing: 200 status, correct body shape, exactly
+    one `cancel(thread_id)` call delivered."""
+    registry = ActiveReviewsRegistry()
+    registry.register("tid-live", mode="repo", target="https://github.com/o/r")
+    # Pretend a task is attached and the cancel went through.
+    registry.cancel = MagicMock(return_value=True)
+    app = create_test_app(graph=_stub_graph_app(), active_reviews=registry)
+    client = TestClient(app)
+    r = client.post("/reviews/tid-live/cancel")
+    assert r.status_code == 200
+    body = r.json()
+    assert body == {"status": "cancelled", "thread_id": "tid-live"}
+    registry.cancel.assert_called_once_with("tid-live")

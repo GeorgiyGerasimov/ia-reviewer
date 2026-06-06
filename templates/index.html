@@ -469,10 +469,35 @@
         #report-body pre { background: var(--code-bg); padding: 0.6rem 0.8rem; border-radius: 6px; overflow-x: auto; font-size: 0.85rem; max-width: 100%; }
         #report-body strong { font-weight: 600; }
         #report-body em { font-style: italic; color: var(--muted); }
-        /* Markdown tables (rare today but possible) overflow horizontally
-           inside their own scroll container instead of stretching the
-           panel out. */
-        #report-body table { display: block; overflow-x: auto; max-width: 100%; }
+        /* Markdown tables (Summary block in the security report — see
+           `_render_summary_table` in report_renderer.py). `display: block`
+           keeps wide tables inside their own horizontal scroll container
+           instead of stretching the panel. Header + zebra rows + cell
+           borders give the table a clear grid; numbers right-align so
+           Severity × Role counts line up visually. */
+        #report-body table {
+            display: block;
+            overflow-x: auto;
+            max-width: 100%;
+            border-collapse: collapse;
+            margin: 0.6rem 0;
+            font-size: 0.88rem;
+        }
+        #report-body table thead { background: var(--code-bg); }
+        #report-body table th,
+        #report-body table td {
+            border: 1px solid var(--border);
+            padding: 0.35rem 0.7rem;
+            text-align: left;
+            white-space: nowrap;
+        }
+        #report-body table th { font-weight: 600; }
+        /* Right-align everything except the first column (the row label).
+           Works for the Summary block (Severity | counts… | Total) and
+           for any future count-style table without per-table overrides. */
+        #report-body table td + td,
+        #report-body table th + th { text-align: right; }
+        #report-body table tbody tr:nth-child(even) { background: var(--code-bg); }
 
         /* ── per-file scan progress (between workflow + past reviews) ─ */
 
@@ -727,6 +752,32 @@
             margin-right: 6px;
             vertical-align: middle;
             animation: pulse-dot 1.4s ease-in-out infinite;
+        }
+
+        /* Stop button — outlined red to read as a destructive action.
+           Sits flush against the elapsed timer on the right side of
+           line1. `stopPropagation` on click keeps the row's
+           "open in new tab" intact for clicks elsewhere. */
+        .active-item-stop {
+            margin-left: 8px;
+            padding: 2px 8px;
+            font-size: 11px;
+            font-weight: 500;
+            line-height: 1.4;
+            color: var(--danger, #dc2626);
+            background: transparent;
+            border: 1px solid var(--danger, #dc2626);
+            border-radius: 4px;
+            cursor: pointer;
+            transition: background 0.15s, color 0.15s;
+        }
+        .active-item-stop:hover:not(:disabled) {
+            background: var(--danger, #dc2626);
+            color: #fff;
+        }
+        .active-item-stop:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
         }
 
         @keyframes pulse-dot {
@@ -1292,6 +1343,46 @@
                 target.textContent = _shortRepoName(item.target, item.ref);
                 target.title = item.target + (item.ref ? " (ref " + item.ref + ")" : "");
 
+                // Stop button — backs POST /reviews/{tid}/cancel.
+                // The endpoint short-circuits to 404 if the review
+                // already finished, so a stale-click is harmless. We
+                // confirm before sending so a misclick on the row
+                // (which opens a new tab) vs the button is unambiguous.
+                const stopBtn = document.createElement("button");
+                stopBtn.type = "button";
+                stopBtn.className = "active-item-stop";
+                stopBtn.textContent = "Stop";
+                stopBtn.title = "Cancel this review";
+                stopBtn.addEventListener("click", async (e) => {
+                    e.stopPropagation();  // don't trigger the row's "open in new tab"
+                    if (!confirm("Stop this review?")) return;
+                    stopBtn.disabled = true;
+                    stopBtn.textContent = "Stopping…";
+                    try {
+                        const r = await fetch(
+                            `/reviews/${encodeURIComponent(item.thread_id)}/cancel`,
+                            {method: "POST"}
+                        );
+                        // 200 → cancellation in flight; the review's
+                        // finally: block will broadcast to chat. We
+                        // refresh the list immediately so the row
+                        // disappears as soon as the registry drops it.
+                        // 404 → already gone; same UX.
+                        await refreshActiveReviews();
+                        if (!r.ok && r.status !== 404) {
+                            stopBtn.disabled = false;
+                            stopBtn.textContent = "Stop";
+                            alert("Could not cancel (status " + r.status + ").");
+                        }
+                    } catch (err) {
+                        stopBtn.disabled = false;
+                        stopBtn.textContent = "Stop";
+                        alert("Network error: " + err.message);
+                    }
+                });
+
+                line1.appendChild(stopBtn);
+
                 li.appendChild(line1);
                 li.appendChild(target);
 
@@ -1594,10 +1685,18 @@
             } else if (ev.state === "finished") {
                 slot.finished = true;
                 slot.currentFile = null;
-                // Trust terminal totals
+                // Trust terminal totals. Three buckets — `processed`
+                // (LLM ran), `failed` (LLM raised), `skipped_empty`
+                // (zero-byte / unreadable files that short-circuited
+                // before the LLM call) — must reconcile to `total`.
+                // Dropping `skipped_empty` here is what caused the
+                // "done (44/54)" mismatch: per-file events ticked up
+                // to 54, then `finished` overwrote with 44.
                 if (typeof ev.processed === "number" && typeof ev.failed === "number") {
-                    slot.done = ev.processed + ev.failed;
+                    const skippedEmpty = ev.skipped_empty || 0;
+                    slot.done = ev.processed + ev.failed + skippedEmpty;
                     slot.failed = ev.failed;
+                    slot.skippedEmpty = skippedEmpty;
                 }
             }
             renderFileProgress();
@@ -1817,7 +1916,12 @@
 
         /* Tiny markdown→HTML for the final report. Supports headings (#–####),
            bullets, paragraphs, inline `code`, ```fenced``` blocks, **bold**,
-           _italic_, and [text](url) / bare /reports/...md links. */
+           _italic_, [text](url) / bare /reports/...md links, AND
+           GFM-style tables (`| col | col |\n|---|---|\n| ... |`). Tables
+           are detected by consecutive lines that start AND end with `|`;
+           the second row must be a separator (`---`) — if it isn't, the
+           block falls back to paragraph rendering so we don't eat real
+           prose that happens to mention pipes. */
         function renderMarkdown(src) {
             const lines = src.split("\n");
             const out = [];
@@ -1835,7 +1939,12 @@
                 if (listOpen) { out.push("</ul>"); listOpen = false; }
             };
 
-            for (const raw of lines) {
+            const isTableRow = (s) => /^\s*\|.*\|\s*$/.test(s);
+            const isTableSeparator = (s) => /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(s);
+            const splitCells = (s) => s.replace(/^\s*\|/, "").replace(/\|\s*$/, "").split("|").map((c) => c.trim());
+
+            for (let i = 0; i < lines.length; i++) {
+                const raw = lines[i];
                 const line = raw.replace(/\r$/, "");
                 if (line.startsWith("```")) {
                     flushPara(); closeList();
@@ -1844,6 +1953,33 @@
                     continue;
                 }
                 if (codeOpen) { out.push(escapeHtml(line)); out.push("\n"); continue; }
+
+                // Table detection: header `| ... |` + separator `|---|---|`.
+                // Without the separator row this isn't a table — bail to
+                // the normal paragraph path so plain prose with a stray
+                // pipe doesn't get eaten.
+                if (isTableRow(line) && i + 1 < lines.length && isTableSeparator(lines[i + 1])) {
+                    flushPara(); closeList();
+                    const headers = splitCells(line);
+                    const bodyRows = [];
+                    let j = i + 2;
+                    while (j < lines.length && isTableRow(lines[j].replace(/\r$/, ""))) {
+                        bodyRows.push(splitCells(lines[j].replace(/\r$/, "")));
+                        j++;
+                    }
+                    let html = '<table class="md-table"><thead><tr>';
+                    for (const h of headers) html += "<th>" + inlineMd(h) + "</th>";
+                    html += "</tr></thead><tbody>";
+                    for (const row of bodyRows) {
+                        html += "<tr>";
+                        for (const cell of row) html += "<td>" + inlineMd(cell) + "</td>";
+                        html += "</tr>";
+                    }
+                    html += "</tbody></table>";
+                    out.push(html);
+                    i = j - 1;  // outer loop's i++ moves us past the last row
+                    continue;
+                }
 
                 const h4 = line.match(/^####\s+(.*)$/);
                 const h3 = line.match(/^###\s+(.*)$/);
@@ -1958,6 +2094,14 @@
                 }
                 if (data && data.type === "progress" && data.node) {
                     if (data.node === "__done__") {
+                        finalizeWorkflow();
+                    } else if (data.node === "__cancelled__") {
+                        // Stop button pressed. Drop any `active` spinners
+                        // and paint everything not-yet-finished as skipped
+                        // (same logic as `__done__` — the run is over,
+                        // whatever wasn't reached won't be reached now).
+                        // The user-visible "Review cancelled by user."
+                        // message is sent separately via the chat broadcast.
                         finalizeWorkflow();
                     } else {
                         markNodeFired(data.node, data.status);
