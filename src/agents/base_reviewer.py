@@ -23,6 +23,7 @@ import json
 import re
 from pathlib import Path
 
+from src.chat.progress_emitter import maybe_emit
 from src.graph.state import AgentReview, RepoFile, ReviewState
 from src.integrations.github import GitHubClient
 from src.models.factory import ModelFactory
@@ -324,24 +325,72 @@ class LLMPerFileReviewer(BaseReviewer):
         cap_concurrent = max(1, settings.MAX_CONCURRENT_FILES_PER_AGENT)
         semaphore = asyncio.Semaphore(cap_concurrent)
 
+        # Up-front "started_batch" event so the UI can render the full
+        # file list before any LLM call completes. The active emitter
+        # (if any) is read from the contextvar set by `_run_repo_review`;
+        # outside a review, maybe_emit no-ops silently.
+        total_files = len(matched)
+        await maybe_emit({
+            "type": "file_progress",
+            "role": self.role,
+            "state": "started_batch",
+            "total": total_files,
+            "paths": [rf.path for rf in matched],
+        })
+
+        # Atomic 1-based index counter — incremented on each file_done
+        # emission. Files complete in undefined order under asyncio.gather,
+        # so we hand out indices by completion order rather than by
+        # input position. (Tests assert each index is 1..N exactly once.)
+        index_counter = {"n": 0}
+        index_lock = asyncio.Lock()
+
+        async def _emit_file_done(repo_file: RepoFile, findings_count: int, failed: bool):
+            async with index_lock:
+                index_counter["n"] += 1
+                idx = index_counter["n"]
+            await maybe_emit({
+                "type": "file_progress",
+                "role": self.role,
+                "state": "file_done",
+                "path": repo_file.path,
+                "index": idx,
+                "total": total_files,
+                "findings_count": findings_count,
+                "failed": failed,
+            })
+
         async def _process_one(repo_file: RepoFile):
             """Run one file through read → prompt → LLM → parse.
             Returns None if the file is empty (we skip empties), or the
             parsed dict tagged with `file_path`. Exceptions are
             converted to None at the gather() level so one failing call
-            does not sink the whole pass."""
+            does not sink the whole pass.
+
+            We emit `file_done` from INSIDE this coroutine — including
+            on the exception path — so the UI always gets exactly one
+            envelope per file even when an LLM call raises.
+            """
             async with semaphore:
                 content = _read_snapshot_file(snapshot_root, repo_file.path)
                 if not content:
+                    # Empty / missing file. Still emit file_done so the
+                    # UI doesn't show this file as stuck "in progress".
+                    await _emit_file_done(repo_file, 0, failed=False)
                     return None
                 prompt = self.prompt_template.format(
                     context=self._build_repo_file_context(state, repo_file, content)
                 )
-                response = await self.model.ainvoke(prompt)
-                parsed = self._parse_response(response.content)
+                try:
+                    response = await self.model.ainvoke(prompt)
+                    parsed = self._parse_response(response.content)
+                except Exception:
+                    await _emit_file_done(repo_file, 0, failed=True)
+                    raise
                 # Tag findings with the file path if the model didn't.
                 for finding in parsed["findings"]:
                     finding.setdefault("file", repo_file.path)
+                await _emit_file_done(repo_file, len(parsed["findings"]), failed=False)
                 return {
                     "file_path": repo_file.path,
                     "parsed": parsed,
@@ -360,6 +409,8 @@ class LLMPerFileReviewer(BaseReviewer):
         all_findings: list[dict] = []
         per_file_summaries: list[str] = []
         highest_severity = "info"
+        failed_count = 0
+        processed_count = 0
 
         for repo_file, outcome in zip(matched, per_file_results, strict=True):
             if isinstance(outcome, BaseException):
@@ -369,16 +420,31 @@ class LLMPerFileReviewer(BaseReviewer):
                     repo_file.path,
                     outcome,
                 )
+                failed_count += 1
                 continue
             if outcome is None:
                 # empty file or read failure — already logged inside _read_snapshot_file
                 continue
+            processed_count += 1
             parsed = outcome["parsed"]
             all_findings.extend(parsed["findings"])
             if parsed["summary"] and parsed["findings"]:
                 per_file_summaries.append(f"{repo_file.path}: {parsed['summary']}")
             if _SEVERITY_RANK[parsed["severity"]] > _SEVERITY_RANK[highest_severity]:
                 highest_severity = parsed["severity"]
+
+        # Terminal envelope for the UI's per-file progress block.
+        # Operators see the per-file bar switch to its "done" state
+        # without waiting for the workflow-level node_complete event.
+        await maybe_emit({
+            "type": "file_progress",
+            "role": self.role,
+            "state": "finished",
+            "processed": processed_count,
+            "failed": failed_count,
+            "findings_total": len(all_findings),
+            "total": total_files,
+        })
 
         summary_parts: list[str] = []
         if truncated_count:
