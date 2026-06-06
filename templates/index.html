@@ -474,6 +474,132 @@
            panel out. */
         #report-body table { display: block; overflow-x: auto; max-width: 100%; }
 
+        /* ── per-file scan progress (between workflow + past reviews) ─ */
+
+        .file-progress {
+            background: var(--surface-elevated);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            padding: 12px 14px;
+            margin-bottom: 16px;
+            font-size: 12px;
+        }
+
+        .file-progress h3 {
+            margin: 0 0 10px;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .role-block {
+            margin-bottom: 12px;
+        }
+
+        .role-block:last-child {
+            margin-bottom: 0;
+        }
+
+        .role-block-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 4px;
+        }
+
+        .role-block-counts {
+            font-variant-numeric: tabular-nums;
+            color: var(--text-secondary);
+            font-weight: 400;
+        }
+
+        .role-block-bar {
+            height: 6px;
+            background: var(--border);
+            border-radius: 3px;
+            overflow: hidden;
+            margin-bottom: 6px;
+        }
+
+        .role-block-bar-fill {
+            height: 100%;
+            background: var(--accent);
+            transition: width 0.3s ease-out;
+        }
+
+        .role-block.role-finished .role-block-bar-fill {
+            background: var(--accent-dark);
+        }
+
+        .role-block-current {
+            font-family: ui-monospace, monospace;
+            font-size: 11px;
+            color: var(--text-secondary);
+            margin-bottom: 4px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .role-block-files {
+            display: none;
+            margin-top: 6px;
+            max-height: 200px;
+            overflow-y: auto;
+            border-top: 1px dashed var(--border);
+            padding-top: 6px;
+        }
+
+        .role-block.expanded .role-block-files {
+            display: block;
+        }
+
+        .role-block-toggle {
+            background: transparent;
+            border: none;
+            color: var(--accent);
+            font-size: 11px;
+            cursor: pointer;
+            padding: 0;
+            text-align: left;
+        }
+
+        .role-block-files .file-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-family: ui-monospace, monospace;
+            font-size: 11px;
+            padding: 2px 0;
+            color: var(--text-secondary);
+        }
+
+        .role-block-files .file-row.done {
+            color: var(--text-primary);
+        }
+
+        .role-block-files .file-row.done .file-status {
+            color: var(--accent-dark);
+        }
+
+        .role-block-files .file-row.failed .file-status {
+            color: var(--severity-major);
+        }
+
+        .role-block-files .file-row.pending .file-status {
+            color: var(--text-secondary);
+            opacity: 0.5;
+        }
+
+        .file-status {
+            font-weight: 600;
+            padding-left: 8px;
+        }
+
         /* ── past reviews list (under the workflow diagram) ────────── */
         .past-reviews {
             border: 1px solid var(--border);
@@ -712,6 +838,11 @@
                     <li class="wf-step" data-node="process_proposal"><span class="dot"></span>Exploit proposals</li>
                     <li class="wf-step" data-node="notify_rejection"><span class="dot"></span>Rejected</li>
                 </ol>
+            </div>
+
+            <div class="file-progress" id="file-progress" hidden>
+                <h3>Per-file scan</h3>
+                <div id="file-progress-roles"></div>
             </div>
 
             <div class="past-reviews">
@@ -1098,6 +1229,7 @@
             reportFetchedForThread = null;
             reportPanel.hidden = true;
             reportBody.innerHTML = '<div class="empty">Waiting for the review to finish…</div>';
+            resetFileProgress();
         }
 
         function markActive(node) {
@@ -1159,6 +1291,137 @@
          * can upgrade gray → green; a single rejected reading sticks even
          * if a later empty drain fires.
          */
+        // ── per-file scan progress ─────────────────────────────────────
+        //
+        // Backend emits `file_progress` envelopes during repo-mode
+        // reviewer iteration (see src/agents/base_reviewer.py and
+        // src/chat/progress_emitter.py). One block per role, updated in
+        // place. State carried per-role in `fileProgressState[role]` so
+        // late events (replay on reconnect) can rebuild the same view
+        // from scratch.
+
+        const ROLE_LABELS = {
+            dependency: "Dependency",
+            injection: "Injection",
+            owasp: "OWASP Top 10",
+        };
+        const ROLE_ORDER = ["dependency", "injection", "owasp"];
+        const fileProgressState = {};  // role -> {total, paths, done, finished, currentFile, fileStatuses}
+
+        function handleFileProgress(ev) {
+            const role = ev.role;
+            const slot = fileProgressState[role] || (fileProgressState[role] = {
+                total: 0,
+                paths: [],
+                done: 0,
+                failed: 0,
+                finished: false,
+                currentFile: null,
+                fileStatuses: {},  // path -> "pending" | "done" | "failed"
+            });
+
+            if (ev.state === "started_batch") {
+                slot.total = ev.total || 0;
+                slot.paths = ev.paths || [];
+                slot.fileStatuses = {};
+                slot.paths.forEach((p) => { slot.fileStatuses[p] = "pending"; });
+                slot.done = 0;
+                slot.failed = 0;
+                slot.finished = false;
+                slot.currentFile = null;
+            } else if (ev.state === "file_done") {
+                slot.done += 1;
+                if (ev.failed) slot.failed += 1;
+                slot.currentFile = ev.path;
+                slot.fileStatuses[ev.path] = ev.failed ? "failed" : "done";
+            } else if (ev.state === "finished") {
+                slot.finished = true;
+                slot.currentFile = null;
+                // Trust terminal totals
+                if (typeof ev.processed === "number" && typeof ev.failed === "number") {
+                    slot.done = ev.processed + ev.failed;
+                    slot.failed = ev.failed;
+                }
+            }
+            renderFileProgress();
+        }
+
+        function renderFileProgress() {
+            const wrapper = document.getElementById("file-progress");
+            const container = document.getElementById("file-progress-roles");
+            if (!wrapper || !container) return;
+
+            const activeRoles = ROLE_ORDER.filter((r) => fileProgressState[r]);
+            if (activeRoles.length === 0) {
+                wrapper.hidden = true;
+                return;
+            }
+            wrapper.hidden = false;
+
+            // Re-render the whole block — small enough that DOM diffing
+            // would be overkill. Keeps state model and rendering
+            // independent so replay-on-connect is identical to live.
+            container.innerHTML = "";
+            activeRoles.forEach((role) => {
+                const slot = fileProgressState[role];
+                const pct = slot.total > 0 ? Math.min(100, Math.round((slot.done / slot.total) * 100)) : 0;
+                const isExpanded = slot._expanded === true;
+                const status = slot.finished
+                    ? `done (${slot.failed > 0 ? slot.failed + " failed, " : ""}${slot.done - slot.failed}/${slot.total})`
+                    : `${slot.done}/${slot.total}`;
+
+                const block = document.createElement("div");
+                block.className = "role-block" + (slot.finished ? " role-finished" : "") + (isExpanded ? " expanded" : "");
+                block.innerHTML = `
+                    <div class="role-block-header">
+                        <span>${ROLE_LABELS[role] || role}</span>
+                        <span class="role-block-counts">${status}</span>
+                    </div>
+                    <div class="role-block-bar"><div class="role-block-bar-fill" style="width: ${pct}%"></div></div>
+                    ${slot.currentFile ? `<div class="role-block-current">▸ ${escapeHtml(slot.currentFile)}</div>` : ""}
+                    <button class="role-block-toggle" data-role="${role}">
+                        ${isExpanded ? "▼ hide files" : "▶ show files"}
+                    </button>
+                    <div class="role-block-files">
+                        ${slot.paths.map((p) => {
+                            const st = slot.fileStatuses[p] || "pending";
+                            const marker = st === "done" ? "✓" : st === "failed" ? "✗" : "·";
+                            return `<div class="file-row ${st}"><span>${escapeHtml(p)}</span><span class="file-status">${marker}</span></div>`;
+                        }).join("")}
+                    </div>
+                `;
+                container.appendChild(block);
+            });
+
+            container.querySelectorAll(".role-block-toggle").forEach((btn) => {
+                btn.addEventListener("click", (e) => {
+                    const role = e.currentTarget.dataset.role;
+                    const slot = fileProgressState[role];
+                    if (slot) {
+                        slot._expanded = !slot._expanded;
+                        renderFileProgress();
+                    }
+                });
+            });
+        }
+
+        function escapeHtml(s) {
+            return String(s)
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#39;");
+        }
+
+        function resetFileProgress() {
+            for (const k of Object.keys(fileProgressState)) delete fileProgressState[k];
+            const wrapper = document.getElementById("file-progress");
+            if (wrapper) wrapper.hidden = true;
+            const container = document.getElementById("file-progress-roles");
+            if (container) container.innerHTML = "";
+        }
+
         function markNodeFired(node, status) {
             const el = STEPS.get(node);
             if (!el) return;
@@ -1418,6 +1681,10 @@
             socket = new WebSocket(`${proto}//${location.host}/ws/chat/${threadId}`);
             socket.onmessage = (event) => {
                 const data = JSON.parse(event.data);
+                if (data && data.type === "file_progress" && data.role) {
+                    handleFileProgress(data);
+                    return;
+                }
                 if (data && data.type === "progress" && data.node) {
                     if (data.node === "__done__") {
                         finalizeWorkflow();

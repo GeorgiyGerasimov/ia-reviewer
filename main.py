@@ -11,6 +11,7 @@ Run with `uvicorn main:app --host 0.0.0.0 --port 8000`.
 """
 
 import asyncio
+import contextlib
 import logging
 import uuid
 from contextlib import asynccontextmanager
@@ -25,6 +26,8 @@ from langgraph.types import Command
 from src.agents.coordinator import CoordinatorAgent
 from src.agents.past_context import PastContextAgent
 from src.chat.hub import ChatHub
+from src.chat.progress_emitter import ProgressEmitter, use_emitter
+from src.chat.progress_log import progress_log_loop
 from src.chat.progress_store import ProgressStore
 from src.chat.store import ChatMessage, ChatStore
 from src.graph.coordinator import build_review_graph
@@ -455,6 +458,18 @@ async def _run_repo_review(
          at the saved report.
     """
     snapshot_dir = None
+    progress_log_task: asyncio.Task | None = None
+    # Bind a ProgressEmitter for this review's thread_id and install it
+    # into the contextvar so per-file LLM iteration inside the reviewer
+    # agents (LLMPerFileReviewer._run_repo) can emit `file_progress`
+    # envelopes to BOTH the persistent ProgressStore (UI replay on
+    # connect) AND the live ChatHub (live UI updates). Same emitter
+    # backs the periodic_log_task below.
+    emitter = ProgressEmitter(
+        thread_id=thread_id,
+        store=app.state.progress_store,
+        hub=app.state.chat_hub,
+    )
     try:
         # Local shallow-clone instead of GitHub REST tree/blob fetches —
         # avoids the 60 req/h anonymous rate limit on bigger repos.
@@ -475,13 +490,26 @@ async def _run_repo_review(
         )
         state = ReviewState(request=review_request, thread_id=thread_id)
         config = _trace_config(app, thread_id, state, trigger="http_repo")
-        await _stream_graph_with_progress(app, thread_id, state, config)
+        # Periodic snapshot logger — one INFO line per minute on
+        # `graph.progress` logger summarising every active reviewer's
+        # done/total counts. See src/chat/progress_log.py for shape.
+        progress_log_task = asyncio.create_task(
+            progress_log_loop(thread_id, app.state.progress_store)
+        )
+        with use_emitter(emitter):
+            await _stream_graph_with_progress(app, thread_id, state, config)
         await _broadcast_pending_interrupts(app, thread_id)
         await _broadcast_repo_completion(app, thread_id)
         await _persist_review(app, state)
     except Exception as e:
         logger.error("repo review failed for %s@%s: %s", repo_url, ref, e)
     finally:
+        if progress_log_task is not None:
+            progress_log_task.cancel()
+            # Drain the cancel so the final-snapshot log line lands
+            # (the loop catches CancelledError to flush before exiting).
+            with contextlib.suppress(asyncio.CancelledError):
+                await progress_log_task
         if snapshot_dir is not None:
             cleanup_snapshot(snapshot_dir)
 
