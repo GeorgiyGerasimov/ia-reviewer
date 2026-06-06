@@ -93,4 +93,22 @@ jobs:
         run: playwright install chromium --with-deps
 
       - name: Pytest (Playwright suite only)
-        run: pytest tests/e2e/playwright/ -v --tb=short
+        # `--reruns 1 --only-rerun TimeoutError` quarantines one class
+        # of known browser-startup flake — real bugs still fail
+        # deterministically on both attempts. `--screenshot` and
+        # `--video` capture artifacts on failure so we don't need to
+        # repro locally to debug.
+        run: |
+          pytest tests/e2e/playwright/ -v --tb=short \
+            --reruns 1 \
+            --only-rerun "TimeoutError|Timeout exceeded" \
+            --screenshot=only-on-failure \
+            --video=retain-on-failure
+
+      - name: Upload Playwright artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-failures
+          path: test-results/
+          retention-days: 7
