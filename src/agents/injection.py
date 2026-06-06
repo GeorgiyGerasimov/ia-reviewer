@@ -1,4 +1,5 @@
 from src.agents.base_reviewer import LLMPerFileReviewer
+from src.scanners.file_classifier import FileCategory
 
 
 class InjectionReviewer(LLMPerFileReviewer):
@@ -14,6 +15,18 @@ class InjectionReviewer(LLMPerFileReviewer):
         "*.c", "*.cc", "*.cpp", "*.h", "*.hpp",
         "*.sql", "*.sh", "*.bash",
     )
+    # Test files contain intentional injection-pattern examples
+    # (f-string SQL in test_validator.py, subprocess invocations in
+    # test fixtures, etc) — reviewing them produces noise. Docs do not
+    # execute. Infra is OWASP's responsibility (A05). Vendored /
+    # generated are not our code.
+    SKIP_CATEGORIES = frozenset({
+        FileCategory.TEST,
+        FileCategory.DOCS,
+        FileCategory.INFRA,
+        FileCategory.VENDORED,
+        FileCategory.GENERATED,
+    })
     prompt_template = """You are an injection-vulnerability reviewer.
 
 Examine the diff for code paths that take attacker-controlled input and pass

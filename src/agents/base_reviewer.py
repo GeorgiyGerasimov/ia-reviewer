@@ -27,6 +27,7 @@ from src.chat.progress_emitter import maybe_emit
 from src.graph.state import AgentReview, RepoFile, ReviewState
 from src.integrations.github import GitHubClient
 from src.models.factory import ModelFactory
+from src.scanners.file_classifier import FileCategory, classify_file
 from src.utils.config import settings
 from src.utils.llm_parsing import strip_thinking_trace
 from src.utils.logger import get_logger
@@ -283,7 +284,19 @@ class LLMPerFileReviewer(BaseReviewer):
     running it once per file is the only way to get useful findings.
     `DependencyReviewer` does NOT extend this — its repo-mode is a
     scripted OSV.dev scan, not an LLM loop. See `ScriptedScannerReviewer`.
+
+    Subclasses can declare `SKIP_CATEGORIES` to drop files whose
+    purpose makes them out of scope for that reviewer — e.g.
+    Injection skips TEST/DOCS (test files contain intentional
+    injection-pattern fixtures; markdown does not execute). The skip
+    filter runs AFTER PATH_PATTERNS so it only sees files that already
+    matched the extension whitelist. See
+    `src/scanners/file_classifier.py` for the heuristic.
     """
+
+    # Default: scan every file that passes PATH_PATTERNS. Subclasses
+    # override with the categories they want to skip.
+    SKIP_CATEGORIES: frozenset[FileCategory] = frozenset()
 
     async def _run_repo(self, state: ReviewState) -> dict:
         """Per-file LLM iteration over `state.request.repo_files`.
@@ -305,7 +318,27 @@ class LLMPerFileReviewer(BaseReviewer):
             )
             return {}
 
-        matched = [f for f in request.repo_files if self._matches_path(f.path)]
+        pattern_matched = [f for f in request.repo_files if self._matches_path(f.path)]
+        # Per-role category filter — see `SKIP_CATEGORIES` on the
+        # subclass. Files whose role-purpose (test, docs, vendored, …)
+        # doesn't match this reviewer get dropped here BEFORE the
+        # MAX_FILES_PER_AGENT cap so the cap budget goes to in-scope
+        # files only.
+        matched: list[RepoFile] = []
+        skipped_breakdown: dict[str, int] = {}
+        for f in pattern_matched:
+            category = classify_file(f.path)
+            if category in self.SKIP_CATEGORIES:
+                key = category.value
+                skipped_breakdown[key] = skipped_breakdown.get(key, 0) + 1
+                continue
+            matched.append(f)
+        if skipped_breakdown:
+            logger.info(
+                "%s: skipping %s as out-of-scope for this reviewer",
+                self.role,
+                ", ".join(f"{n} {cat}" for cat, n in sorted(skipped_breakdown.items())),
+            )
         cap = settings.MAX_FILES_PER_AGENT
         truncated_count = max(0, len(matched) - cap)
         matched = matched[:cap]
@@ -329,6 +362,9 @@ class LLMPerFileReviewer(BaseReviewer):
         # file list before any LLM call completes. The active emitter
         # (if any) is read from the contextvar set by `_run_repo_review`;
         # outside a review, maybe_emit no-ops silently.
+        # `skipped` carries per-category counts of files dropped via
+        # SKIP_CATEGORIES so the UI can render "scanning N, skipped:
+        # M tests / K docs as out-of-scope for {role}".
         total_files = len(matched)
         await maybe_emit({
             "type": "file_progress",
@@ -336,6 +372,7 @@ class LLMPerFileReviewer(BaseReviewer):
             "state": "started_batch",
             "total": total_files,
             "paths": [rf.path for rf in matched],
+            "skipped": skipped_breakdown,
         })
 
         # Atomic 1-based index counter — incremented on each file_done

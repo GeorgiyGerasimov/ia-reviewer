@@ -545,6 +545,18 @@
             text-overflow: ellipsis;
         }
 
+        .role-block-skipped {
+            font-size: 11px;
+            color: var(--text-secondary);
+            margin-bottom: 4px;
+            font-style: italic;
+            opacity: 0.85;
+        }
+        .role-block-skipped strong {
+            font-style: normal;
+            font-weight: 600;
+        }
+
         .role-block-files {
             display: none;
             margin-top: 6px;
@@ -1563,6 +1575,11 @@
             if (ev.state === "started_batch") {
                 slot.total = ev.total || 0;
                 slot.paths = ev.paths || [];
+                // `skipped` is {category: count} for files the reviewer
+                // dropped as out-of-scope (PR #16). UI surfaces these
+                // so operators see WHY the scan list looks shorter
+                // than the file tree.
+                slot.skipped = ev.skipped || {};
                 slot.fileStatuses = {};
                 slot.paths.forEach((p) => { slot.fileStatuses[p] = "pending"; });
                 slot.done = 0;
@@ -1618,6 +1635,7 @@
                         <span class="role-block-counts">${status}</span>
                     </div>
                     <div class="role-block-bar"><div class="role-block-bar-fill" style="width: ${pct}%"></div></div>
+                    ${_renderSkippedSummary(slot.skipped)}
                     ${slot.currentFile ? `<div class="role-block-current">▸ ${escapeHtml(slot.currentFile)}</div>` : ""}
                     <button class="role-block-toggle" data-role="${role}">
                         ${isExpanded ? "▼ hide files" : "▶ show files"}
@@ -1652,6 +1670,19 @@
                 .replace(/>/g, "&gt;")
                 .replace(/"/g, "&quot;")
                 .replace(/'/g, "&#39;");
+        }
+
+        // Render the "skipped 12 tests · 4 docs as out-of-scope" line
+        // under a role-block's progress bar. `skipped` is the
+        // {category: count} dict from the started_batch envelope.
+        // Returns empty string when nothing was skipped — block then
+        // collapses naturally without an empty line.
+        function _renderSkippedSummary(skipped) {
+            if (!skipped) return "";
+            const entries = Object.entries(skipped).filter(([, n]) => n > 0);
+            if (entries.length === 0) return "";
+            const parts = entries.map(([cat, n]) => `<strong>${n}</strong> ${cat}`);
+            return `<div class="role-block-skipped">skipped ${parts.join(" · ")} (out of scope)</div>`;
         }
 
         function resetFileProgress() {
