@@ -69,25 +69,54 @@ class _StubChatResponse:
         self.content = content
 
 
-def _route_response(prompt: str) -> str:
+def _route_response(prompt: str, config: dict[str, Any]) -> str:
     """Pattern-match the agent role from the prompt and return the
     canonical JSON shape that role's `_parse_response` expects.
 
-    Keep this tiny — we're testing the UI, not the LLM. Every reviewer
-    gets `findings: []` so the report stays short and predictable.
+    `config` lets tests tweak individual responses:
+      * `validator_accepted=False` (+ optional `validator_category`,
+        `validator_reason`) → reject the request → graph routes to
+        `notify_rejection` → reviewer circles go grey.
+      * `reviewer_findings={"injection": [...]}` → bypass empty
+        findings for one role (used by the markdown-table scenario
+        to force a Summary table with non-zero counts).
+
+    Keep this tiny — we're testing the UI, not the LLM.
     """
     lower = prompt.lower()
-    # Validator decides accept/reject. We want the happy path → accept.
+    # Validator decides accept/reject. The prompt has "trolling" and
+    # specific category names; match either to find the validator call.
     if "is this a real review request" in lower or "trolling" in lower:
+        if config.get("validator_accepted", True):
+            return (
+                '```json\n'
+                '{"accepted": true, "category": "accepted", '
+                '"reason": "playwright fixture"}\n'
+                '```'
+            )
+        category = config.get("validator_category", "docs_only")
+        reason = config.get("validator_reason", "playwright fixture reject")
         return (
             '```json\n'
-            '{"accepted": true, "category": "accepted", '
-            '"reason": "playwright fixture"}\n'
+            f'{{"accepted": false, "category": "{category}", '
+            f'"reason": "{reason}"}}\n'
             '```'
         )
     # Review-decision agent checks ambiguity. No findings = no rerun.
     if "ambiguous" in lower or "needs_clarification" in lower:
         return '```json\n{"needs_clarification": false}\n```'
+    # Reviewer findings — default empty, but `reviewer_findings` can
+    # override per role for tests that need non-zero counts (e.g. the
+    # markdown Summary-table scenario).
+    overrides = config.get("reviewer_findings") or {}
+    for role, findings_json in overrides.items():
+        if role in lower:
+            return (
+                '```json\n'
+                f'{{"findings": {findings_json}, '
+                '"summary": "playwright stub", "severity": "minor"}\n'
+                '```'
+            )
     # Per-file reviewer prompts — Injection / OWASP / Configuration.
     # DependencyReviewer uses the script-first path so its summary LLM
     # only runs once at the end; we return the same minimal shape.
@@ -98,14 +127,14 @@ def _route_response(prompt: str) -> str:
     )
 
 
-def _make_stub_model() -> AsyncMock:
+def _make_stub_model(config: dict[str, Any]) -> AsyncMock:
     """One AsyncMock per app — `.ainvoke(prompt)` dispatches via
-    `_route_response`. Spy-able if a future test wants to assert on
-    call counts."""
+    `_route_response(prompt, config)`. `config` is the test's
+    parametrize payload (empty dict = defaults = happy path)."""
     model = AsyncMock()
 
     async def _ainvoke(prompt: str, *args: Any, **kwargs: Any) -> _StubChatResponse:
-        return _StubChatResponse(_route_response(str(prompt)))
+        return _StubChatResponse(_route_response(str(prompt), config))
 
     model.ainvoke = _ainvoke
     return model
@@ -115,7 +144,10 @@ def _make_stub_model() -> AsyncMock:
 
 
 @pytest.fixture
-def playwright_app(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
+def playwright_app(
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+) -> Iterator[str]:
     """Start a single FastAPI app on a free port with:
 
       * `ModelFactory.get` patched to a stub (no LLM network calls)
@@ -125,8 +157,19 @@ def playwright_app(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
       * `clone_repo` patched to a no-op that returns an empty temp dir
         — happy-path test doesn't need a real repo on disk.
 
+    Parametrize with `indirect=True` to tweak the stubs:
+
+        @pytest.mark.parametrize(
+            "playwright_app", [{"validator_accepted": False}], indirect=True
+        )
+        def test_reject(page, playwright_app): ...
+
+    Supported keys: `validator_accepted`, `validator_category`,
+    `validator_reason`, `reviewer_findings` (dict of role → JSON list).
+
     Yields the base URL string. Tears the server down after the test.
     """
+    config: dict[str, Any] = getattr(request, "param", None) or {}
     from src.models.factory import ModelFactory
 
     # Env disables every external integration. `settings` is already
@@ -145,7 +188,7 @@ def playwright_app(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
     # (the documented ops escape hatch).
     monkeypatch.setattr(settings, "WS_ALLOWED_ORIGINS", [])
 
-    stub = _make_stub_model()
+    stub = _make_stub_model(config)
     monkeypatch.setattr(ModelFactory, "get", lambda *a, **kw: stub)
     # The factory caches model instances on `_instances` — flush so the
     # patch wins even if a prior test (or import-time) pre-populated it.
@@ -153,12 +196,15 @@ def playwright_app(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
 
     # Patch the snapshot path: real `clone_repo` calls `git` against a
     # remote URL — we don't want that in CI. Return a temp dir that
-    # exists and has at least one file the file-classifier will see.
+    # exists and has at least one file the file-classifier will see
+    # (unless the test asks for an empty snapshot to trigger the
+    # validator's `empty_repo` rejection branch).
     import tempfile
     from pathlib import Path as _Path
 
     fake_snapshot = _Path(tempfile.mkdtemp(prefix="pw-snap-"))
-    (fake_snapshot / "main.py").write_text("# stub for playwright\n")
+    if not config.get("empty_snapshot"):
+        (fake_snapshot / "main.py").write_text("# stub for playwright\n")
 
     import src.integrations.repo_fetcher as _fetcher
     monkeypatch.setattr(_fetcher, "clone_repo", lambda *a, **kw: fake_snapshot)

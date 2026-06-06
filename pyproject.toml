@@ -50,6 +50,14 @@ dev = [
     # (skip the dir if you don't want to install Chromium); CI
     # installs the browser via `playwright install chromium --with-deps`.
     "pytest-playwright>=0.5.0",
+    # Per-test timeouts (`@pytest.mark.timeout(60)`). Without this the
+    # whole pytest run blocks for hours if a hung uvicorn fixture or
+    # frozen browser page can't be reaped.
+    "pytest-timeout>=2.4.0",
+    # Flake quarantine for Playwright: `--reruns 2 --only-rerun ...` re-runs
+    # network/race-condition flakes once before failing the build. Real
+    # bugs hit the reruns deterministically and still fail.
+    "pytest-rerunfailures>=15.0",
 ]
 
 [tool.ruff]
@@ -72,6 +80,15 @@ select = ["E", "F", "I", "N", "UP", "B", "SIM"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# Global timeout — every test that hasn't returned in 120s gets a
+# SIGTERM. Playwright fixtures bind ports + run a browser; a hung
+# server fixture would otherwise stall CI until the job-level
+# `timeout-minutes` fires (10 minutes — much later than we'd want
+# to find out). Per-test overrides via `@pytest.mark.timeout(N)`.
+timeout = 120
+markers = [
+    "timeout: per-test wall-clock budget in seconds (pytest-timeout)",
+]
 
 [tool.mypy]
 python_version = "3.11"
