@@ -600,6 +600,128 @@
             padding-left: 8px;
         }
 
+        /* ── active reviews list (above past reviews) ────────────── */
+
+        .active-reviews {
+            background: var(--surface-elevated);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            padding: 12px 14px;
+            margin-bottom: 16px;
+        }
+
+        .active-reviews-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 10px;
+        }
+
+        .active-reviews h3 {
+            margin: 0;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .active-reviews-count {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 22px;
+            height: 18px;
+            padding: 0 6px;
+            border-radius: 9px;
+            background: var(--accent);
+            color: white;
+            font-size: 11px;
+            font-weight: 600;
+            font-variant-numeric: tabular-nums;
+        }
+
+        #active-reviews-list {
+            list-style: none;
+            margin: 0;
+            padding: 0;
+        }
+
+        .active-item {
+            cursor: pointer;
+            padding: 8px 10px;
+            border-radius: var(--radius-sm);
+            margin-bottom: 6px;
+            font-size: 12px;
+            border-left: 3px solid var(--accent);
+            background: var(--surface);
+            transition: background 0.15s;
+            position: relative;
+        }
+
+        .active-item:hover {
+            background: var(--surface-hover);
+        }
+
+        .active-item:last-child {
+            margin-bottom: 0;
+        }
+
+        .active-item.current {
+            border-left-color: var(--accent-dark);
+            background: var(--surface-hover);
+        }
+
+        .active-item-line1 {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 2px;
+        }
+
+        .active-item-mode {
+            font-family: ui-monospace, monospace;
+            font-size: 10px;
+            text-transform: uppercase;
+            color: var(--accent);
+            padding: 1px 5px;
+            border: 1px solid var(--accent);
+            border-radius: 3px;
+        }
+
+        .active-item-elapsed {
+            font-variant-numeric: tabular-nums;
+            color: var(--text-secondary);
+            font-weight: 400;
+            font-size: 11px;
+        }
+
+        .active-item-target {
+            color: var(--text-secondary);
+            font-size: 11px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .active-item-spinner {
+            display: inline-block;
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: var(--accent);
+            margin-right: 6px;
+            vertical-align: middle;
+            animation: pulse-dot 1.4s ease-in-out infinite;
+        }
+
+        @keyframes pulse-dot {
+            0%, 80%, 100% { opacity: 0.3; transform: scale(0.8); }
+            40% { opacity: 1; transform: scale(1.0); }
+        }
+
         /* ── past reviews list (under the workflow diagram) ────────── */
         .past-reviews {
             border: 1px solid var(--border);
@@ -845,6 +967,14 @@
                 <div id="file-progress-roles"></div>
             </div>
 
+            <div class="active-reviews" id="active-reviews" hidden>
+                <div class="active-reviews-header">
+                    <h3>Active reviews</h3>
+                    <span class="active-reviews-count" id="active-count">0</span>
+                </div>
+                <ul id="active-reviews-list"></ul>
+            </div>
+
             <div class="past-reviews">
                 <div class="past-reviews-header">
                     <h3>Past reviews</h3>
@@ -1074,6 +1204,116 @@
         pastRefreshBtn.addEventListener("click", refreshPastReviews);
         // Initial load right after the DOM wires up.
         window.addEventListener("DOMContentLoaded", refreshPastReviews);
+
+        // ── Active reviews list ────────────────────────────────────────
+        //
+        // Polls `GET /reviews/active` every 5s while the page is open.
+        // The list is small (typically 0-5 entries), the response is
+        // pure in-memory, no DB hit. Items are clickable — opens that
+        // thread's session in a new tab via `?thread=<id>` so the
+        // current tab keeps its in-flight WS untouched. URL-based
+        // switching means the new tab survives reload and can be
+        // shared as a link.
+
+        const activeWrap = document.getElementById("active-reviews");
+        const activeCount = document.getElementById("active-count");
+        const activeList = document.getElementById("active-reviews-list");
+
+        async function refreshActiveReviews() {
+            try {
+                const r = await fetch("/reviews/active");
+                if (!r.ok) return;
+                const items = await r.json();
+                renderActiveReviews(items);
+            } catch (_) {
+                // Network blip — leave whatever's rendered.
+            }
+        }
+
+        function renderActiveReviews(items) {
+            activeList.innerHTML = "";
+            if (!items || items.length === 0) {
+                activeWrap.hidden = true;
+                return;
+            }
+            activeWrap.hidden = false;
+            activeCount.textContent = items.length;
+
+            // Current tab's thread (from `currentThread` module variable,
+            // populated either by openChat() after POST /review OR by
+            // the auto-attach on DOMContentLoaded when `?thread=` is set).
+            // Highlight that row so the operator sees "this is the one
+            // I'm watching".
+            // `currentThread` may not be initialised yet at the first
+            // render (race with DOMContentLoaded) — fall back to URL.
+            const params = new URLSearchParams(window.location.search);
+            const currentThreadHighlight = (typeof currentThread === "string" && currentThread)
+                ? currentThread
+                : params.get("thread") || "";
+
+            for (const item of items) {
+                const li = document.createElement("li");
+                li.className = "active-item";
+                if (item.thread_id === currentThreadHighlight) li.classList.add("current");
+                li.dataset.thread = item.thread_id;
+
+                const line1 = document.createElement("div");
+                line1.className = "active-item-line1";
+
+                const left = document.createElement("span");
+                const spin = document.createElement("span");
+                spin.className = "active-item-spinner";
+                left.appendChild(spin);
+                const mode = document.createElement("span");
+                mode.className = "active-item-mode";
+                mode.textContent = item.mode || "?";
+                left.appendChild(mode);
+                line1.appendChild(left);
+
+                const elapsed = document.createElement("span");
+                elapsed.className = "active-item-elapsed";
+                elapsed.textContent = _fmtElapsed(item.elapsed_s);
+                line1.appendChild(elapsed);
+
+                const target = document.createElement("div");
+                target.className = "active-item-target";
+                target.textContent = _shortRepoName(item.target, item.ref);
+                target.title = item.target + (item.ref ? " (ref " + item.ref + ")" : "");
+
+                li.appendChild(line1);
+                li.appendChild(target);
+
+                if (item.thread_id === currentThreadHighlight) {
+                    // Already viewing this thread — clicking is a no-op
+                    // (avoid confusing "duplicate tab" behaviour).
+                    li.style.cursor = "default";
+                } else {
+                    li.addEventListener("click", () => {
+                        // Open in a new tab so the current tab keeps
+                        // watching its own thread. The new tab picks
+                        // up `?thread=` and connects to that WS.
+                        const url = `${window.location.pathname}?thread=${encodeURIComponent(item.thread_id)}`;
+                        window.open(url, "_blank");
+                    });
+                }
+                activeList.appendChild(li);
+            }
+        }
+
+        function _fmtElapsed(seconds) {
+            const s = Math.max(0, Math.floor(seconds || 0));
+            if (s < 60) return s + "s";
+            const m = Math.floor(s / 60);
+            const r = s % 60;
+            if (m < 60) return m + "m " + r + "s";
+            const h = Math.floor(m / 60);
+            const rm = m % 60;
+            return h + "h " + rm + "m";
+        }
+
+        // First load + 5s poll while page is open.
+        window.addEventListener("DOMContentLoaded", refreshActiveReviews);
+        setInterval(refreshActiveReviews, 5000);
 
         /**
          * Theme handling.
@@ -1815,6 +2055,30 @@
         function appendSystem(text) {
             renderMessage({role: "system", text});
         }
+
+        // ── Auto-attach when URL has ?thread=<id> ──────────────────────
+        //
+        // Operators clicking an entry in the "Active reviews" list open
+        // a new tab at `?thread=<id>`. Without this hook, the new tab
+        // would sit empty until they typed something in the form. Do
+        // the same thing here that the form-submit success handler does
+        // (`openChat(threadId)`) — replay chat history + connect WS +
+        // render the file-progress block. Skip the POST /review step
+        // since the review is already running server-side.
+        window.addEventListener("DOMContentLoaded", () => {
+            const params = new URLSearchParams(window.location.search);
+            const tid = params.get("thread");
+            if (!tid) return;
+            // Defer to next tick so `openChat` and its dependencies
+            // (defined inline below the form handler) are bound.
+            setTimeout(() => {
+                if (typeof openChat === "function") {
+                    setReviewButtonEnabled(false);  // can't trigger a new one from a "view-only" tab
+                    reviewStatus.textContent = `Attached to thread ${tid}`;
+                    openChat(tid);
+                }
+            }, 0);
+        });
     </script>
 </body>
 </html>
