@@ -1,4 +1,5 @@
 from src.agents.base_reviewer import LLMPerFileReviewer
+from src.scanners.file_classifier import FileCategory
 
 
 class OWASPTop10Reviewer(LLMPerFileReviewer):
@@ -22,6 +23,15 @@ class OWASPTop10Reviewer(LLMPerFileReviewer):
         "nginx.conf", "*.nginx",
         "*.properties",
     )
+    # Skip tests (intentional weak-crypto fixtures, mock auth) and docs
+    # (markdown does not execute). Keep INFRA — that's the A05/A07/A08
+    # surface. Vendored / generated never reviewed.
+    SKIP_CATEGORIES = frozenset({
+        FileCategory.TEST,
+        FileCategory.DOCS,
+        FileCategory.VENDORED,
+        FileCategory.GENERATED,
+    })
     prompt_template = """You are an OWASP-Top-10 security reviewer.
 
 A03 (Injection) and A06 (Vulnerable & Outdated Components) are covered by
