@@ -23,6 +23,7 @@ notable run. Keep the original report alongside (link or include a
 |---|---|---|---|---|
 | 2026-06-05 | `gpt-oss-20b` (self-hosted) | repo | self-review of `ia-reviewer` | [77 findings, ~12% signal — ~70% noise + hallucinations](./gpt-oss-20b-2026-06-05.md) |
 | 2026-06-06 | `Qwen3.6-27B` (self-hosted) | repo | self-review of `ia-reviewer` | [58 findings, **~65-75% signal**, **0 hallucinated files**, ~6 NEW real bugs surfaced](./qwen3.6-27b-2026-06-06.md) |
+| 2026-06-06 | `Qwen3.6-27B` (self-hosted) | benchmark | parallel fan-out sweep on `MAX_CONCURRENT_FILES_PER_AGENT` | [Sequential→2-concurrent = 2.15× speedup; plateau at ~3-concurrent (gateway-bound)](./parallel-fan-out-sweep-2026-06-06.md) |
 
 ## Cross-run comparison
 
