@@ -103,6 +103,33 @@ _INFRA_DIRS = frozenset({"k8s", "kubernetes", "deploy", "deployment"})
 _CORE_DIRS = frozenset({"src", "lib", "app", "pkg", "internal", "cmd"})
 
 
+def parse_skip_categories_csv(csv: str) -> frozenset[FileCategory]:
+    """Parse a comma-separated `FileCategory` CSV into a frozenset.
+
+    Used by `InjectionReviewer.__init__` / `OWASPTop10Reviewer.__init__`
+    to translate env-driven `INJECTION_SKIP_CATEGORIES` /
+    `OWASP_SKIP_CATEGORIES` into the typed set the reviewer uses.
+
+    Whitespace and case insensitive. Empty input → empty frozenset
+    (semantically "scan everything"). Unknown category name raises
+    `ValueError` — bad config should crash at startup, not silently
+    fall back, so the operator notices a typo before the review run.
+    """
+    out: set[FileCategory] = set()
+    for raw in csv.split(","):
+        token = raw.strip().lower()
+        if not token:
+            continue
+        try:
+            out.add(FileCategory(token))
+        except ValueError as e:
+            raise ValueError(
+                f"Unknown FileCategory in skip-list: {token!r}. "
+                f"Valid: {[c.value for c in FileCategory]}"
+            ) from e
+    return frozenset(out)
+
+
 def classify_file(path: str) -> FileCategory:
     """Classify `path` (POSIX-style, snapshot-relative) into a
     `FileCategory`. Pure function — no I/O, no side effects.

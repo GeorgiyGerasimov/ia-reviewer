@@ -73,6 +73,16 @@ class Settings(BaseSettings):
     # real-world repos while keeping cost predictable.
     MAX_FILES_PER_AGENT: int = 200
 
+    # Per-role file-purpose skip overrides (PR #17). CSV of
+    # `FileCategory` values: `core`, `test`, `docs`, `infra`, `vendored`,
+    # `generated`. Empty string = use code default from the reviewer
+    # subclass (PR #16: injection skips test+docs+infra+vendored+
+    # generated; owasp skips test+docs+vendored+generated). Operators
+    # set this for niche workloads (e.g. scanning docs-only repos for
+    # embedded creds → `INJECTION_SKIP_CATEGORIES=`).
+    INJECTION_SKIP_CATEGORIES: str = ""
+    OWASP_SKIP_CATEGORIES: str = ""
+
     # Per-agent fan-out: how many files a single LLMPerFileReviewer
     # processes concurrently against the gateway. Each per-file call is
     # independent (model sees only one file's contents per prompt), so

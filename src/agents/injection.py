@@ -1,5 +1,6 @@
 from src.agents.base_reviewer import LLMPerFileReviewer
-from src.scanners.file_classifier import FileCategory
+from src.scanners.file_classifier import FileCategory, parse_skip_categories_csv
+from src.utils.config import settings
 
 
 class InjectionReviewer(LLMPerFileReviewer):
@@ -27,6 +28,15 @@ class InjectionReviewer(LLMPerFileReviewer):
         FileCategory.VENDORED,
         FileCategory.GENERATED,
     })
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Optional env override (PR #17). Empty string = keep code
+        # default. Unknown category → ValueError up-front.
+        override = settings.INJECTION_SKIP_CATEGORIES
+        if override.strip():
+            self.SKIP_CATEGORIES = parse_skip_categories_csv(override)
+
     prompt_template = """You are an injection-vulnerability reviewer.
 
 Examine the diff for code paths that take attacker-controlled input and pass
