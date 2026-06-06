@@ -17,6 +17,7 @@ In both modes `run` returns a partial state update
 to enable parallel fan-out.
 """
 
+import asyncio
 import fnmatch
 import json
 import re
@@ -315,23 +316,64 @@ class LLMPerFileReviewer(BaseReviewer):
                 cap,
             )
 
+        # Per-file LLM calls are independent — the model sees only ONE
+        # file's contents per prompt, so parallelising them costs nothing
+        # on quality and cuts wall-clock linearly until the gateway
+        # bottlenecks. `MAX_CONCURRENT_FILES_PER_AGENT=1` collapses to
+        # sequential (back-compat). See settings docstring for tuning.
+        cap_concurrent = max(1, settings.MAX_CONCURRENT_FILES_PER_AGENT)
+        semaphore = asyncio.Semaphore(cap_concurrent)
+
+        async def _process_one(repo_file: RepoFile):
+            """Run one file through read → prompt → LLM → parse.
+            Returns None if the file is empty (we skip empties), or the
+            parsed dict tagged with `file_path`. Exceptions are
+            converted to None at the gather() level so one failing call
+            does not sink the whole pass."""
+            async with semaphore:
+                content = _read_snapshot_file(snapshot_root, repo_file.path)
+                if not content:
+                    return None
+                prompt = self.prompt_template.format(
+                    context=self._build_repo_file_context(state, repo_file, content)
+                )
+                response = await self.model.ainvoke(prompt)
+                parsed = self._parse_response(response.content)
+                # Tag findings with the file path if the model didn't.
+                for finding in parsed["findings"]:
+                    finding.setdefault("file", repo_file.path)
+                return {
+                    "file_path": repo_file.path,
+                    "parsed": parsed,
+                }
+
+        # gather(return_exceptions=True) → one bad file does not sink the
+        # whole pass; the failing index slot becomes an exception object
+        # we filter out below. Order is preserved from `matched`, so the
+        # aggregation that follows produces stable output regardless of
+        # which underlying call finished first.
+        per_file_results = await asyncio.gather(
+            *(_process_one(rf) for rf in matched),
+            return_exceptions=True,
+        )
+
         all_findings: list[dict] = []
         per_file_summaries: list[str] = []
         highest_severity = "info"
 
-        for repo_file in matched:
-            content = _read_snapshot_file(snapshot_root, repo_file.path)
-            if not content:
+        for repo_file, outcome in zip(matched, per_file_results, strict=True):
+            if isinstance(outcome, BaseException):
+                logger.warning(
+                    "%s: per-file LLM call failed for %s: %s",
+                    self.role,
+                    repo_file.path,
+                    outcome,
+                )
                 continue
-            prompt = self.prompt_template.format(
-                context=self._build_repo_file_context(state, repo_file, content)
-            )
-            response = await self.model.ainvoke(prompt)
-            parsed = self._parse_response(response.content)
-            # Tag findings with the file path if the model didn't (which it
-            # often won't, since it sees only one file's content per call).
-            for finding in parsed["findings"]:
-                finding.setdefault("file", repo_file.path)
+            if outcome is None:
+                # empty file or read failure — already logged inside _read_snapshot_file
+                continue
+            parsed = outcome["parsed"]
             all_findings.extend(parsed["findings"])
             if parsed["summary"] and parsed["findings"]:
                 per_file_summaries.append(f"{repo_file.path}: {parsed['summary']}")

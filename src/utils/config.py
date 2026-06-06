@@ -73,6 +73,20 @@ class Settings(BaseSettings):
     # real-world repos while keeping cost predictable.
     MAX_FILES_PER_AGENT: int = 200
 
+    # Per-agent fan-out: how many files a single LLMPerFileReviewer
+    # processes concurrently against the gateway. Each per-file call is
+    # independent (model sees only one file's contents per prompt), so
+    # parallelising them costs nothing on quality and cuts wall-clock
+    # linearly until the gateway becomes the bottleneck.
+    #
+    # Tuning:
+    #   1  → sequential (pre-Jun-2026 behaviour, back-compat baseline)
+    #   3-5  → safe default for most hosted gateways
+    #   8-16 → for beefier self-host with concurrency headroom
+    # Cap to <= effective gateway max-concurrent. Going higher just
+    # queues at the server side without speeding anything up.
+    MAX_CONCURRENT_FILES_PER_AGENT: int = 5
+
     # Repo-mode review: total-tree size cap enforced by the validator. Trees
     # larger than this are rejected outright as `oversized_repo` — we won't
     # even start the per-specialist passes. Separate from MAX_FILES_PER_AGENT,
