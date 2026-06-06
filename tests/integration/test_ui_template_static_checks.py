@@ -123,8 +123,13 @@ def test_inline_script_parses(html_text: str, tmp_path: Path) -> None:
         pytest.skip("node not on PATH; install Node.js to enable JS-syntax checks")
 
     # Match `<script>…</script>` blocks anywhere in the template.
-    # `re.DOTALL` lets `.` span newlines.
-    scripts = re.findall(r"<script>(.*?)</script>", html_text, re.DOTALL)
+    # `re.DOTALL` lets `.` span newlines. `re.IGNORECASE` covers
+    # `<SCRIPT>` / `<Script>` variants — HTML tags are case-insensitive
+    # by spec, and CodeQL flags case-sensitive HTML regexes (correctly,
+    # even if our own template only uses lowercase today).
+    scripts = re.findall(
+        r"<script>(.*?)</script>", html_text, re.DOTALL | re.IGNORECASE,
+    )
     assert scripts, "template has no inline <script> blocks — the JS may have moved"
 
     for i, body in enumerate(scripts):
