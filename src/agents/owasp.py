@@ -1,5 +1,6 @@
 from src.agents.base_reviewer import LLMPerFileReviewer
-from src.scanners.file_classifier import FileCategory
+from src.scanners.file_classifier import FileCategory, parse_skip_categories_csv
+from src.utils.config import settings
 
 
 class OWASPTop10Reviewer(LLMPerFileReviewer):
@@ -32,6 +33,15 @@ class OWASPTop10Reviewer(LLMPerFileReviewer):
         FileCategory.VENDORED,
         FileCategory.GENERATED,
     })
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Optional env override (PR #17). Empty string = keep code
+        # default. Unknown category → ValueError up-front.
+        override = settings.OWASP_SKIP_CATEGORIES
+        if override.strip():
+            self.SKIP_CATEGORIES = parse_skip_categories_csv(override)
+
     prompt_template = """You are an OWASP-Top-10 security reviewer.
 
 A03 (Injection) and A06 (Vulnerable & Outdated Components) are covered by
