@@ -80,6 +80,19 @@ select = ["E", "F", "I", "N", "UP", "B", "SIM"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# By default the regular suite EXCLUDES Playwright tests. Reasons:
+#   1. CI runs them in a dedicated job (`playwright:` in ci.yml) for
+#      isolated browser-startup cost and artifact retention.
+#   2. Mixing them with the pytest-asyncio function-scoped loop pool
+#      is a known plugin-interaction issue — pytest-playwright keeps
+#      its own running loop under the greenlet sync API, and any
+#      `async def test_*` that pytest-asyncio runs AFTER a Playwright
+#      test sees `Runner.run() cannot be called from a running event
+#      loop`. The two test styles don't share a session cleanly.
+#
+# To run the Playwright suite explicitly:
+#   pytest tests/e2e/playwright/ --override-ini='addopts='
+addopts = "--ignore=tests/e2e/playwright"
 # Global timeout — every test that hasn't returned in 120s gets a
 # SIGTERM. Playwright fixtures bind ports + run a browser; a hung
 # server fixture would otherwise stall CI until the job-level

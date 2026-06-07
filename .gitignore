@@ -19,6 +19,17 @@ venv/
 reports/*
 snapshots/*
 
+# Frontend subproject — `web/` carries the React app. Build output and
+# installed Node modules never go in git; the source under `web/src/`
+# does. `package-lock.json` IS checked in so CI installs the exact
+# tree we tested against.
+web/node_modules/
+web/dist/
+web/coverage/
+# TypeScript incremental-build cache — re-generated on every `tsc -b`,
+# never useful in git.
+web/*.tsbuildinfo
+
 # macOS Finder metadata — never useful in a repo
 .DS_Store
 **/.DS_Store

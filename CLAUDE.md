@@ -355,6 +355,18 @@ Discover the model name on whatever gateway you've pointed at:
 curl -s "$AI_GATEWAY_URL/models" | jq '.data[].id'
 ```
 
+## Frontend (web/)
+
+The browser UI is a React subproject at `web/`. Full conventions live in [`web/README.md`](web/README.md); the TL;DR:
+
+- **Stack.** React 18 + TypeScript (strict) + Vite + Vitest + React Testing Library + ESLint (flat) + Prettier.
+- **Layout.** `web/src/{api, components, lib, styles, test}`. Tests sit next to their source as `*.test.{ts,tsx}` (e.g. `format.ts` + `format.test.ts`). Cross-component wiring tests can live under `web/tests/`.
+- **Engineering rules mirror the backend.** TDD red→green→refactor. No real network in tests (mock `fetch`, fake socket class). No `any`. No new deps without justification. Run `npm run lint && npm run typecheck && npm test && npm run build` before committing.
+- **Production.** `main.py` serves `web/dist/index.html` when the build artifact exists; otherwise it falls back to the legacy `templates/index.html`. The Docker build adds a `node:22` stage that runs `npm ci && npm run build` and copies `web/dist/` into the runtime image.
+- **CI.** `.github/workflows/ci.yml` has a dedicated `web` job that runs lint / typecheck / Vitest / Vite build. Independent of the Python job — a frontend regression surfaces even when pytest is clean.
+
+The legacy `templates/index.html` is being migrated panel-by-panel. The status table in `web/README.md` tracks what's already React-native vs still served from Jinja.
+
 ## Dependencies and virtual environment
 
 **All Python dependencies live in `.venv/` at the project root.** Never install into system Python.
@@ -397,9 +409,16 @@ The mock-vs-live gap on `validator`, `judge`, and `judge-formatter` **is the met
 
 ```bash
 source .venv/bin/activate       # once per shell
-pytest                          # all tests
+pytest                          # default — unit + integration + non-playwright e2e
 pytest tests/unit               # unit only
 pytest tests/integration        # integration only
-pytest tests/e2e                # e2e only
+pytest tests/e2e                # e2e only (still skips playwright/)
 pytest -x -q                    # stop on first failure
+
+# Playwright suite (synchronous browser API; runs its own loop).
+# Must clear the project default addopts that excludes it, otherwise
+# the directory is silently skipped:
+pytest tests/e2e/playwright/ --override-ini='addopts='
 ```
+
+The default `pytest` invocation **excludes `tests/e2e/playwright`**. Why: `pytest-playwright`'s sync browser API keeps a long-lived event loop under the hood (via greenlet), and the next async-marked test that `pytest-asyncio` tries to run after it sees `Runner.run() cannot be called from a running event loop`. The two plugins don't share a session cleanly. CI runs the suites in separate jobs (`test:` + `playwright:` in `.github/workflows/ci.yml`); locally the project default keeps the regular run clean.

@@ -47,8 +47,11 @@ jobs:
 
       - name: Pytest (unit + integration + non-playwright e2e)
         # Playwright suite lives in its own directory and has its own
-        # CI job below (needs a browser, runs longer). Exclude it here
-        # to keep this job fast and hermetic.
+        # CI job below (needs a browser, runs longer). The
+        # `--ignore=tests/e2e/playwright` flag below is redundant
+        # with the project's default in pyproject.toml's
+        # `[tool.pytest.ini_options].addopts`, kept explicit here so
+        # this step's intent is obvious without cross-referencing.
         run: pytest -v --tb=short --ignore=tests/e2e/playwright
 
       # Two benchmark gates. The `judge` and `judge-formatter` suites
@@ -62,6 +65,49 @@ jobs:
 
       - name: Benchmark — validator (--mock-llm, pure-code floor 80%)
         run: python -m benchmarks.run validator --mock-llm --min-success-rate 0.80
+
+  web:
+    name: Frontend (lint + tests + build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    # Independent of the Python job — a frontend regression should
+    # still surface even when the backend job is fine, and vice versa.
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies (npm ci)
+        # `npm ci` honours `package-lock.json` and refuses to mutate
+        # it — the exact tree we tested against gets installed.
+        run: npm ci
+        working-directory: web
+
+      - name: Lint (ESLint, zero warnings)
+        run: npm run lint
+        working-directory: web
+
+      - name: Typecheck (tsc --noEmit)
+        run: npm run typecheck
+        working-directory: web
+
+      - name: Unit + component tests (Vitest)
+        run: npm test
+        working-directory: web
+
+      - name: Production build (Vite)
+        # Build catches type errors that escape the test suite (e.g.
+        # CSS-import declarations missing, env-type drift) and proves
+        # the bundle is shippable.
+        run: npm run build
+        working-directory: web
 
   playwright:
     name: UI e2e (Playwright)
@@ -98,8 +144,15 @@ jobs:
         # deterministically on both attempts. `--screenshot` and
         # `--video` capture artifacts on failure so we don't need to
         # repro locally to debug.
+        #
+        # `--override-ini='addopts='` clears the default
+        # `--ignore=tests/e2e/playwright` set in pyproject.toml.
+        # That ignore is what keeps `pytest` (with no args)
+        # excluding Playwright by default — see the comment on
+        # `[tool.pytest.ini_options].addopts` for the rationale.
         run: |
           pytest tests/e2e/playwright/ -v --tb=short \
+            --override-ini='addopts=' \
             --reruns 1 \
             --only-rerun "TimeoutError|Timeout exceeded" \
             --screenshot=only-on-failure \
