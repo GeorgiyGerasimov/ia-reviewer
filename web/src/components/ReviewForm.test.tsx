@@ -4,7 +4,7 @@
 // The Submit button is disabled while the request is in flight so a
 // double-click can't fire two reviews against the same URL.
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ReviewForm } from "./ReviewForm";
@@ -17,6 +17,19 @@ function stagePost(body: unknown, opts: { status?: number } = {}) {
     }) as Response,
   );
 }
+
+beforeEach(() => {
+  // Vitest 4 keeps spies installed across tests by default — without
+  // explicit cleanup, `vi.spyOn(globalThis, "fetch")` in test N+1
+  // composes onto the spy from test N and `toHaveBeenCalledTimes(1)`
+  // counts BOTH tests' calls. `restoreAllMocks` puts globalThis.fetch
+  // back to the original between tests.
+  vi.restoreAllMocks();
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe("<ReviewForm />", () => {
   it("renders the URL input and a Review button", () => {
