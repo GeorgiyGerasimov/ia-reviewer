@@ -173,6 +173,30 @@ describe("useReview", () => {
     expect(attempts).toBe(2);
   });
 
+  it("clears the previous review immediately when switching to a new threadId", async () => {
+    // Scenario: scan is running on `active`; user clicks a past
+    // review (loads), then clicks the active one again. The active
+    // review has no DB row yet (still scanning) → fetch will 404
+    // through the whole retry chain. Without an immediate reset
+    // the panel shows the past review's markdown for ~10s.
+    stageFetch(review({ thread_id: "past", report_markdown: "## old" }));
+    const { result, rerender } = renderHook(({ tid }) => useReview(tid), {
+      initialProps: { tid: "past" as string | null },
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(result.current.review?.report_markdown).toBe("## old");
+
+    // Switch to a thread that 404s through the chain (still
+    // scanning, no row).
+    for (let i = 0; i < 6; i++) stageFetch({ detail: "not found" }, { status: 404 });
+    rerender({ tid: "active" as string | null });
+    // The very next paint must show null — not the stale "past"
+    // payload still in state.
+    expect(result.current.review).toBeNull();
+  });
+
   it("clears review when threadId becomes null", async () => {
     stageFetch(review());
     const { result, rerender } = renderHook(({ tid }) => useReview(tid), {
