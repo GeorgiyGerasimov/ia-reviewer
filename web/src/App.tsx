@@ -51,6 +51,18 @@ export function App() {
   );
   const stream = useReviewStream(currentThreadId);
 
+  // Resolve the current review's mode (pr vs repo). Two sources, in
+  // priority: (1) live `activeItems` snapshot — populated within ~1s
+  // of submit by the 5s poll, covers in-flight reviews; (2) the
+  // persisted `review` row — covers completed/past reviews. Falls
+  // back to "repo" when neither is available so the diagram doesn't
+  // flicker (repo mode shows the superset of steps; one extra row
+  // disappearing is less jarring than one suddenly appearing).
+  const currentMode: "pr" | "repo" =
+    activeItems.find((i) => i.thread_id === currentThreadId)?.mode ??
+    review?.mode ??
+    "repo";
+
   // Cascade refresh when the WS signals the review is done. The
   // BackgroundTask persists the row + writes the report markdown
   // AFTER it broadcasts `__done__`, so we have to re-poll the
@@ -171,6 +183,7 @@ export function App() {
           nodeStatuses={stream.nodeStatuses}
           validationAccepted={stream.validationAccepted}
           terminal={stream.isDone}
+          mode={currentMode}
         />
         <FileProgressPanel roleEnvelopes={stream.fileProgress} />
         <ActiveReviewsList
