@@ -1399,16 +1399,29 @@
         }
 
         /** Refresh the token-usage panel by re-fetching /reviews/{tid}.
-         *  Called after the workflow finalizes (so live runs see their
-         *  totals as soon as save_review lands) and after each exploit
-         *  POST (so the per-exploit cost shows up). */
-        async function loadTokenUsage(threadId) {
-            try {
-                const r = await fetch("/reviews/" + threadId);
-                if (!r.ok) return;
-                const data = await r.json();
-                renderTokenUsage(data.token_usage || null);
-            } catch (_) { /* leave whatever was rendered */ }
+         *
+         *  Called after the workflow finalizes (live runs) and after
+         *  each exploit POST. Retries on 404 with the same exponential
+         *  backoff as `loadCriticalFindings` — the `__done__` envelope
+         *  fires BEFORE `_persist_review` writes the DB row, so the
+         *  first fetch can race ahead and 404, leaving the panel
+         *  silently empty until the next refresh trigger (e.g. clicking
+         *  Create exploit, which is what surfaced this bug). */
+        async function loadTokenUsage(threadId, {retry = true} = {}) {
+            const delays = retry ? CF_FETCH_RETRY_MS : [0];
+            for (const delay of delays) {
+                if (delay) await new Promise(r => setTimeout(r, delay));
+                try {
+                    const r = await fetch("/reviews/" + threadId);
+                    if (r.status === 404) continue;  // DB row not persisted yet
+                    if (r.ok) {
+                        const data = await r.json();
+                        renderTokenUsage(data.token_usage || null);
+                        return;
+                    }
+                    return;  // non-404 error → leave rendered state
+                } catch (_) { /* try next delay */ }
+            }
         }
 
         /**
@@ -1591,7 +1604,8 @@
                 loadCriticalFindings(tid, {retry: false}).catch(() => {});
                 // Refresh token-usage so the per-exploit bucket (and
                 // the headline total) reflects the cost of this PoC.
-                loadTokenUsage(tid).catch(() => {});
+                // No retry needed — the row already exists at this point.
+                loadTokenUsage(tid, {retry: false}).catch(() => {});
             } catch (e) {
                 actionCell.innerHTML = `<span class="cf-status">error</span>`;
                 console.error("createExploit failed:", e);
