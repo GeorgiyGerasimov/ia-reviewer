@@ -671,6 +671,27 @@
             text-overflow: ellipsis;
         }
 
+        /* In-flight token counter — rendered under the target line so
+           operators can see how much each running review has burned so
+           far without opening the report panel. Numbers update every
+           5 s with the existing /reviews/active poll. */
+        .active-item-tokens {
+            font-variant-numeric: tabular-nums;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            font-size: 10.5px;
+            color: var(--text-secondary);
+            margin-top: 2px;
+            white-space: nowrap;
+        }
+        .active-item-tk-in,
+        .active-item-tk-out {
+            color: var(--text);
+            font-weight: 500;
+        }
+        .active-item-tk-sep {
+            color: var(--muted);
+        }
+
         .active-item-spinner {
             display: inline-block;
             width: 6px;
@@ -1765,6 +1786,21 @@
                 li.appendChild(line1);
                 li.appendChild(target);
 
+                // Live token counter — updates every 5s as the
+                // /reviews/active poll fires. Format compact (`5.1k`)
+                // so the sidebar stays narrow even on big repos.
+                if (item.tokens) {
+                    const tk = document.createElement("div");
+                    tk.className = "active-item-tokens";
+                    tk.title = `${item.tokens.input} input / ${item.tokens.output} output across ${item.tokens.calls} LLM call${item.tokens.calls === 1 ? "" : "s"}`;
+                    tk.innerHTML =
+                        `<span class="active-item-tk-in">${_fmtTokens(item.tokens.input)}</span>` +
+                        ` <span class="active-item-tk-sep">in</span> · ` +
+                        `<span class="active-item-tk-out">${_fmtTokens(item.tokens.output)}</span>` +
+                        ` <span class="active-item-tk-sep">out</span>`;
+                    li.appendChild(tk);
+                }
+
                 if (item.thread_id === currentThreadHighlight) {
                     // Already viewing this thread — clicking is a no-op
                     // (avoid confusing "duplicate tab" behaviour).
@@ -1791,6 +1827,18 @@
             const h = Math.floor(m / 60);
             const rm = m % 60;
             return h + "h " + rm + "m";
+        }
+
+        /** Compact token count for the sidebar — `1234` → `1.2k`,
+         *  `45678` → `46k`, `1234567` → `1.2M`. Keeps the active-item
+         *  row narrow even on big repos where individual reviews can
+         *  burn hundreds of thousands of tokens. */
+        function _fmtTokens(n) {
+            const v = Math.max(0, Math.floor(n || 0));
+            if (v < 1000) return String(v);
+            if (v < 10_000) return (v / 1000).toFixed(1).replace(/\.0$/, "") + "k";
+            if (v < 1_000_000) return Math.round(v / 1000) + "k";
+            return (v / 1_000_000).toFixed(1).replace(/\.0$/, "") + "M";
         }
 
         // First load + 5s poll while page is open.

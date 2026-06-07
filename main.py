@@ -158,12 +158,23 @@ def _register_routes(app: FastAPI) -> None:
     async def list_active_reviews(request: Request) -> JSONResponse:
         """In-flight reviews — for the UI's 'Active reviews' poll.
 
-        Pure in-memory snapshot from ActiveReviewsRegistry; does NOT
-        touch the DB. Returned ordered by `started_at` ascending so
-        the longest-running review sits at the top of the list.
+        Pure in-memory snapshot from ActiveReviewsRegistry, enriched
+        per-entry with the live TokenUsageHandler totals so the panel
+        can render an in-flight `X.Xk in / Y.Yk out` counter under
+        the elapsed-time line. No DB query, no extra fetch — just
+        reads the per-thread handler that's already accumulating
+        token usage from every graph-node LLM call.
         """
         registry = request.app.state.active_reviews
-        items = [s.to_dict() for s in registry.list_active()]
+        handlers = _get_token_handlers(request.app)
+        items: list[dict] = []
+        for state in registry.list_active():
+            row = state.to_dict()
+            handler = handlers.get(state.thread_id)
+            row["tokens"] = handler.totals() if handler else {
+                "input": 0, "output": 0, "calls": 0,
+            }
+            items.append(row)
         return JSONResponse(items, status_code=200)
 
     @app.post("/reviews/{thread_id}/cancel")

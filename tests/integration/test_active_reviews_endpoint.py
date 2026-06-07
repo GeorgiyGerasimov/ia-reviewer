@@ -55,6 +55,70 @@ def test_active_endpoint_returns_registered_entries():
         assert it["elapsed_s"] >= 0
 
 
+def test_active_endpoint_includes_live_token_counts():
+    """The UI's Active reviews panel shows in-flight token usage under
+    the elapsed-time line. We expose the per-thread TokenUsageHandler's
+    totals (input/output/calls across ALL nodes that fired so far) so
+    the UI gets a single zero-cost number per poll — no DB query, no
+    extra fetch."""
+    from langchain_core.messages import AIMessage
+    from langchain_core.outputs import ChatGeneration, LLMResult
+
+    from src.utils.token_tracking import TokenUsageHandler, _current_node, set_current_node
+
+    handler = TokenUsageHandler()
+    # Stage a few LLM calls under different nodes — totals roll up.
+    for node, (in_t, out_t) in [
+        ("validate_request", (100, 20)),
+        ("injection_review", (5_000, 250)),
+    ]:
+        token = set_current_node(node)
+        try:
+            msg = AIMessage(
+                content="ok",
+                usage_metadata={
+                    "input_tokens": in_t,
+                    "output_tokens": out_t,
+                    "total_tokens": in_t + out_t,
+                },
+                response_metadata={"model_name": "claude-sonnet-4-6"},
+            )
+            handler.on_llm_end(LLMResult(generations=[[ChatGeneration(message=msg)]]))
+        finally:
+            _current_node.reset(token)
+
+    registry = ActiveReviewsRegistry()
+    registry.register("tid-live", mode="repo", target="https://github.com/o/r")
+
+    app = create_test_app(graph=_stub_graph_app(), active_reviews=registry)
+    # Inject the handler against the live thread_id.
+    app.state.token_handlers = {"tid-live": handler}
+
+    client = TestClient(app)
+    r = client.get("/reviews/active")
+    assert r.status_code == 200
+    items = r.json()
+    assert len(items) == 1
+    tokens = items[0]["tokens"]
+    assert tokens["input"] == 5_100
+    assert tokens["output"] == 270
+    assert tokens["calls"] == 2
+
+
+def test_active_endpoint_zero_tokens_when_handler_absent():
+    """Brand-new review where no LLM call has fired yet — the tokens
+    field is still present with zero values so the UI can render a
+    placeholder line consistently."""
+    registry = ActiveReviewsRegistry()
+    registry.register("tid-cold", mode="repo", target="x")
+    app = create_test_app(graph=_stub_graph_app(), active_reviews=registry)
+    # No handlers registered.
+    client = TestClient(app)
+    r = client.get("/reviews/active")
+    items = r.json()
+    assert items[0]["tokens"] == {"input": 0, "output": 0, "calls": 0}
+
+
 def test_active_endpoint_drops_unregistered_entries():
     registry = ActiveReviewsRegistry()
     registry.register("tid-A", mode="repo", target="x")
