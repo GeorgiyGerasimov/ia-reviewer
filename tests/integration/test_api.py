@@ -120,4 +120,7 @@ async def test_run_review_passes_scope_and_thread_id(mocker):
     state, config = invocations[0]
     assert state.request.scope == ["injection"]
     assert state.thread_id == "tid-x"
-    assert config == {"configurable": {"thread_id": "tid-x"}}
+    # `callbacks` always carries the per-request TokenUsageHandler
+    # (langfuse_callback is disabled in this test fixture).
+    assert config["configurable"] == {"thread_id": "tid-x"}
+    assert "callbacks" in config and len(config["callbacks"]) == 1

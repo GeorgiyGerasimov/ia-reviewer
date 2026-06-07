@@ -936,6 +936,80 @@
         @keyframes cf-spin {
             to { transform: rotate(360deg); }
         }
+
+        /* ── Token-usage panel ──────────────────────────────────────
+           Per-node LLM accounting surfaced under the Critical findings
+           panel + above the report body. One headline (total in/out
+           tokens) and a collapsible per-node table. */
+        #token-usage {
+            margin-top: 1.5rem;
+            padding: 0.75rem 0.9rem;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            background: var(--surface);
+            font-size: 0.85rem;
+        }
+        #token-usage h3 {
+            margin: 0 0 0.35rem;
+            font-size: 1rem;
+            display: flex;
+            align-items: baseline;
+            gap: 0.5rem;
+        }
+        .tu-totals {
+            font-size: 0.85rem;
+            color: var(--text);
+        }
+        .tu-totals strong { font-weight: 600; }
+        .tu-totals .tu-sep {
+            color: var(--muted);
+            margin: 0 0.4rem;
+        }
+        .tu-totals .tu-tokens {
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        }
+        .tu-details {
+            margin-top: 0.55rem;
+        }
+        .tu-details summary {
+            cursor: pointer;
+            color: var(--accent);
+            font-size: 0.8rem;
+            user-select: none;
+        }
+        .tu-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 0.5rem;
+            font-size: 0.82rem;
+        }
+        .tu-table th,
+        .tu-table td {
+            text-align: left;
+            padding: 0.3rem 0.55rem;
+            border-bottom: 1px solid var(--border);
+        }
+        .tu-table th {
+            font-weight: 600;
+            color: var(--muted);
+            text-transform: uppercase;
+            font-size: 0.7rem;
+            letter-spacing: 0.04em;
+        }
+        .tu-table td.tu-num {
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            text-align: right;
+            white-space: nowrap;
+        }
+        .tu-table td.tu-models {
+            color: var(--muted);
+            font-size: 0.78rem;
+        }
+        .tu-table tr.tu-total td {
+            border-top: 2px solid var(--border);
+            border-bottom: none;
+            font-weight: 600;
+        }
         .cf-row-meta {
             font-size: 0.75rem;
             color: var(--muted);
@@ -1090,6 +1164,13 @@
                  race between __done__ and save_review). -->
             <section id="critical-findings" hidden></section>
 
+            <!-- Token-usage summary — per-node LLM accounting from
+                 `reviews.token_usage`. Headline shows total in/out
+                 tokens; the <details> block expands to a per-node
+                 table (input · output · calls · model). Hidden when
+                 the review row has empty token_usage. -->
+            <section id="token-usage" hidden></section>
+
             <section id="report-panel" hidden>
                 <div class="report-header">
                     <h2>Final report</h2>
@@ -1214,12 +1295,14 @@
             } catch (_) { /* network blip → try DB next */ }
 
             // 2) Fall back to the DB row if the on-disk file was missing.
+            //    Also pulls token_usage for the summary panel.
+            let dbData = null;
             try {
                 const r = await fetch("/reviews/" + threadId);
                 if (!r.ok) throw new Error("HTTP " + r.status);
-                const data = await r.json();
+                dbData = await r.json();
                 if (!markdownLoaded) {
-                    const md = data.report_markdown || "";
+                    const md = dbData.report_markdown || "";
                     if (!md) throw new Error("DB row has no report_markdown");
                     reportBody.innerHTML = renderMarkdown(md);
                     reportRawLink.href = "/reports/" + threadId + ".md";
@@ -1234,11 +1317,98 @@
                 // Markdown loaded, DB lookup failed — non-fatal, keep going.
             }
 
-            // 3) Always render the critical-findings panel from the
+            // 3) Token-usage panel (from the same DB row).
+            renderTokenUsage(dbData ? dbData.token_usage : null);
+
+            // 4) Always render the critical-findings panel from the
             //    dedicated endpoint. It joins findings with their
             //    current exploit_status so the per-row buttons can be
             //    "Create" vs "View" without a second fetch.
             await loadCriticalFindings(threadId);
+        }
+
+        /** Render the token-usage panel from the `token_usage` JSONB on
+         *  the review row. Shape: `{<node>: {input, output, calls, models}}`.
+         *  Empty / null → panel hidden. */
+        function renderTokenUsage(usage) {
+            const panel = document.getElementById("token-usage");
+            if (!usage || typeof usage !== "object" || Object.keys(usage).length === 0) {
+                panel.hidden = true;
+                panel.innerHTML = "";
+                return;
+            }
+            const entries = Object.entries(usage).sort((a, b) =>
+                ((b[1].input || 0) + (b[1].output || 0)) - ((a[1].input || 0) + (a[1].output || 0))
+            );
+            let totalIn = 0, totalOut = 0, totalCalls = 0;
+            const allModels = new Set();
+            for (const [, bucket] of entries) {
+                totalIn += bucket.input || 0;
+                totalOut += bucket.output || 0;
+                totalCalls += bucket.calls || 0;
+                for (const m of (bucket.models || [])) allModels.add(m);
+            }
+            const fmt = (n) => (n || 0).toLocaleString("en-US");
+            const headline = `
+                <h3>Token usage
+                    <span class="tu-totals">
+                        <span class="tu-tokens"><strong>${fmt(totalIn)}</strong> in</span>
+                        <span class="tu-sep">·</span>
+                        <span class="tu-tokens"><strong>${fmt(totalOut)}</strong> out</span>
+                        <span class="tu-sep">·</span>
+                        <span>${totalCalls} LLM call${totalCalls === 1 ? "" : "s"}</span>
+                    </span>
+                </h3>
+            `;
+            const rows = entries.map(([node, bucket]) => {
+                const models = (bucket.models || []).join(", ") || "—";
+                return `<tr>
+                    <td>${escapeHtml(node)}</td>
+                    <td class="tu-num">${fmt(bucket.input)}</td>
+                    <td class="tu-num">${fmt(bucket.output)}</td>
+                    <td class="tu-num">${bucket.calls || 0}</td>
+                    <td class="tu-models">${escapeHtml(models)}</td>
+                </tr>`;
+            }).join("");
+            const totalsRow = `<tr class="tu-total">
+                <td>Total</td>
+                <td class="tu-num">${fmt(totalIn)}</td>
+                <td class="tu-num">${fmt(totalOut)}</td>
+                <td class="tu-num">${totalCalls}</td>
+                <td class="tu-models">${escapeHtml([...allModels].join(", ") || "—")}</td>
+            </tr>`;
+            panel.innerHTML = `
+                ${headline}
+                <details class="tu-details">
+                    <summary>Per-node breakdown</summary>
+                    <table class="tu-table">
+                        <thead>
+                            <tr>
+                                <th>Node</th>
+                                <th class="tu-num">Input</th>
+                                <th class="tu-num">Output</th>
+                                <th class="tu-num">Calls</th>
+                                <th>Model</th>
+                            </tr>
+                        </thead>
+                        <tbody>${rows}${totalsRow}</tbody>
+                    </table>
+                </details>
+            `;
+            panel.hidden = false;
+        }
+
+        /** Refresh the token-usage panel by re-fetching /reviews/{tid}.
+         *  Called after the workflow finalizes (so live runs see their
+         *  totals as soon as save_review lands) and after each exploit
+         *  POST (so the per-exploit cost shows up). */
+        async function loadTokenUsage(threadId) {
+            try {
+                const r = await fetch("/reviews/" + threadId);
+                if (!r.ok) return;
+                const data = await r.json();
+                renderTokenUsage(data.token_usage || null);
+            } catch (_) { /* leave whatever was rendered */ }
         }
 
         /**
@@ -1419,6 +1589,9 @@
                 // since one more attempt just landed. Pull the latest
                 // canonical list lazily — no-op if it 404s briefly.
                 loadCriticalFindings(tid, {retry: false}).catch(() => {});
+                // Refresh token-usage so the per-exploit bucket (and
+                // the headline total) reflects the cost of this PoC.
+                loadTokenUsage(tid).catch(() => {});
             } catch (e) {
                 actionCell.innerHTML = `<span class="cf-status">error</span>`;
                 console.error("createExploit failed:", e);
@@ -1771,6 +1944,11 @@
             reportFetchedForThread = null;
             reportPanel.hidden = true;
             reportBody.innerHTML = '<div class="empty">Waiting for the review to finish…</div>';
+            // Hide the critical-findings + token-usage panels too —
+            // they're tied to the previous run's DB row and would be
+            // stale during the new review's first few seconds.
+            renderCriticalFindings(null, null);
+            renderTokenUsage(null);
             resetFileProgress();
         }
 
@@ -2067,7 +2245,10 @@
             if (!reportFetchedForThread) fetchAndRenderReport(currentThread);
             // Refresh the critical-findings panel — by now the DB row
             // has been persisted so the per-row counts are authoritative.
-            if (currentThread) loadCriticalFindings(currentThread);
+            if (currentThread) {
+                loadCriticalFindings(currentThread);
+                loadTokenUsage(currentThread);
+            }
             // New review just finished → refresh the past-reviews list so
             // the operator sees the new row appear without manual refresh.
             refreshPastReviews();
