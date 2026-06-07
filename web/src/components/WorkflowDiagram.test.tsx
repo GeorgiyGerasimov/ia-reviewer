@@ -125,6 +125,38 @@ describe("<WorkflowDiagram />", () => {
     );
   });
 
+  it("renders a 'Security reviewers' synthetic parent above the four specialists", () => {
+    // The four reviewers fan out from a synthetic parent so the
+    // diagram visually groups them. The parent fires (turns green)
+    // when all four children have reached a terminal state — but
+    // the LABEL must always be present so operators can see the
+    // grouping even before anything runs.
+    render(<WorkflowDiagram nodeStatuses={{}} validationAccepted={null} />);
+    expect(screen.getByText("Security reviewers")).toBeInTheDocument();
+    expect(screen.getByTestId("wf-step-security_reviewers")).toBeInTheDocument();
+  });
+
+  it("marks security_reviewers as fired once all four specialists have fired/empty", () => {
+    // The parent doesn't get its own backend envelope — the UI
+    // derives the state from the four children. Once they're all
+    // terminal, the parent flips to fired.
+    render(
+      <WorkflowDiagram
+        nodeStatuses={{
+          dependency_review: "fired",
+          injection_review: "fired",
+          owasp_review: "empty",
+          configuration_review: "fired",
+        }}
+        validationAccepted={true}
+      />,
+    );
+    expect(screen.getByTestId("wf-step-security_reviewers")).toHaveAttribute(
+      "data-status",
+      "fired",
+    );
+  });
+
   it("renders the Dependency badge marking it as deterministic (OSV.dev)", () => {
     // Tooltip carries the longer explanation; the badge label is
     // just `OSV.dev` to keep the sidebar compact.

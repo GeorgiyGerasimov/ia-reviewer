@@ -180,6 +180,85 @@ describe("useReviewStream", () => {
     expect(first.readyState).toBe(MockWebSocket.CLOSED);
   });
 
+  it("cascades active to the security reviewers when validate_request accepts", () => {
+    // Without this cascade, after `validate_request` fires the
+    // four reviewer dots stay grey for ~20s while the LLMs run —
+    // no visual feedback. Mirroring legacy `handleValidationResult`,
+    // we mark all four + the synthetic parent as active.
+    const { result } = renderHook(() => useReviewStream("tid"));
+    const ws = MockWebSocket.latest();
+    act(() => ws.acceptConnection());
+
+    act(() =>
+      ws.emit({
+        type: "progress",
+        node: "validate_request",
+        status: "fired",
+        accepted: true,
+      }),
+    );
+
+    for (const node of [
+      "dependency_review",
+      "injection_review",
+      "owasp_review",
+      "configuration_review",
+      "security_reviewers",
+    ]) {
+      expect(result.current.nodeStatuses[node]).toBe("active");
+    }
+  });
+
+  it("cascades active to review_decision when a specialist fires", () => {
+    // Once a specialist returns, review_decision is what's next on
+    // the LLM-busy path — give it the pulsing indicator so the
+    // sidebar shows *something* moving while LangGraph runs the
+    // ambiguity heuristic + optional interrupt.
+    const { result } = renderHook(() => useReviewStream("tid"));
+    const ws = MockWebSocket.latest();
+    act(() => ws.acceptConnection());
+
+    act(() => ws.emit({ type: "progress", node: "injection_review", status: "fired" }));
+    expect(result.current.nodeStatuses.review_decision).toBe("active");
+  });
+
+  it("cascades active to aggregate_results after review_decision fires", () => {
+    const { result } = renderHook(() => useReviewStream("tid"));
+    const ws = MockWebSocket.latest();
+    act(() => ws.acceptConnection());
+
+    act(() =>
+      ws.emit({ type: "progress", node: "review_decision", status: "fired" }),
+    );
+    expect(result.current.nodeStatuses.aggregate_results).toBe("active");
+  });
+
+  it("cascades active to publish_report after aggregate_results fires", () => {
+    const { result } = renderHook(() => useReviewStream("tid"));
+    const ws = MockWebSocket.latest();
+    act(() => ws.acceptConnection());
+
+    act(() =>
+      ws.emit({ type: "progress", node: "aggregate_results", status: "fired" }),
+    );
+    expect(result.current.nodeStatuses.publish_report).toBe("active");
+  });
+
+  it("does NOT downgrade a terminal status when an upstream node cascades active onto it", () => {
+    // Race: review_decision finishes BEFORE all reviewers' envelopes
+    // arrive (the join can fire on the first complete batch). A
+    // late reviewer envelope must not flip review_decision back
+    // to active.
+    const { result } = renderHook(() => useReviewStream("tid"));
+    const ws = MockWebSocket.latest();
+    act(() => ws.acceptConnection());
+
+    act(() => ws.emit({ type: "progress", node: "review_decision", status: "fired" }));
+    act(() => ws.emit({ type: "progress", node: "injection_review", status: "fired" }));
+
+    expect(result.current.nodeStatuses.review_decision).toBe("fired");
+  });
+
   it("tolerates malformed JSON on the wire without crashing", () => {
     // A misbehaving proxy / dev tool might inject non-JSON text.
     // We log and drop, never throw — otherwise a single bad frame

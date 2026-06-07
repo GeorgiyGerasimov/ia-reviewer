@@ -207,6 +207,10 @@ panels are migrating from `templates/index.html` piece by piece:
 | CriticalFindingsPanel | ✅ | Defensive-use disclaimer + per-row exploit creation + cap detection; 10 tests |
 | `useTheme`        | ✅     | Reads `<html data-theme>` from the boot script; flips + persists to localStorage; 7 tests |
 | ThemeToggle + Header | ✅  | Pill button in `<header>` with sun/moon glyph; 5 tests. Boot script in index.html still handles first-paint to avoid FOUC |
+| FileProgressPanel | ✅     | Per-role per-file scan progress (repo-mode) — progress bar + current file + skipped-categories summary; 6 tests |
+| Workflow cascade `active` | ✅ | `useReviewStream` cascades pulsing-active to successor nodes when an upstream node fires (mirrors legacy NEXT_AFTER); 4 new tests |
+| Security-reviewers parent | ✅ | Workflow diagram derives the synthetic `security_reviewers` parent's terminal state from the four child specialists; 2 new tests |
+| `useReview` retry-on-404 | ✅ | Same 300/600/1200/2400/4800 ms backoff as `useCriticalFindings` — rides out the `_persist_review` race window so the Final report + Token usage panels populate after `__done__`; 3 new tests |
 | PWA (manifest + SW) | TODO | vite-plugin-pwa with Workbox                   |
 | Web Push          | TODO   | VAPID; notify on critical findings             |
 | Mobile layout     | TODO   | Drawer sidebar, stacked findings on narrow     |
