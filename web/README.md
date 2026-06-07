@@ -198,10 +198,13 @@ panels are migrating from `templates/index.html` piece by piece:
 | ActiveReviewsList | ✅     | Sidebar with select / stop / live token line; 8 tests |
 | ReviewForm        | ✅     | PR/repo URL submit, auto-detects mode from `/pull/N`; 8 tests |
 | Wired App page    | ✅     | First integrated React page (form → submit → workflow tracks the new thread); 3 smoke tests |
-| PastReviews       | TODO   | Sidebar list, GET /reviews                     |
-| CriticalFindings  | TODO   | Exploit-PoC creation panel                     |
-| TokenUsagePanel   | TODO   | Per-node LLM accounting in the report view     |
-| ReportPanel       | TODO   | Markdown report viewer + WebSocket stream      |
+| `usePastReviews`  | ✅     | One-shot GET /reviews + refresh; 4 tests       |
+| `useReview`       | ✅     | GET /reviews/{tid} + refresh on threadId change; 6 tests |
+| `useCriticalFindings` | ✅ | GET /reviews/{tid}/critical-findings with 5-step backoff for the persistence-race window; 6 tests |
+| PastReviewsList   | ✅     | Sidebar list with severity dot + count; 7 tests |
+| ReportPanel       | ✅     | Markdown renderer via `lib/markdown.ts`; XSS-safe by construction; 7 tests |
+| TokenUsagePanel   | ✅     | Per-node breakdown sorted by total tokens desc; 8 tests |
+| CriticalFindingsPanel | ✅ | Defensive-use disclaimer + per-row exploit creation + cap detection; 10 tests |
 | Theme toggle      | TODO   | Dark mode (palette + localStorage persistence) |
 | PWA (manifest + SW) | TODO | vite-plugin-pwa with Workbox                   |
 | Web Push          | TODO   | VAPID; notify on critical findings             |
