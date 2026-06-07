@@ -4,13 +4,14 @@
 [![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/license-PolyForm%20NC%201.0.0-blue)](LICENSE)
 
 Multi-agent AI **security** code reviewer for GitHub, built on LangGraph
-and FastAPI. Runs three specialist reviewers in parallel, optionally
+and FastAPI. Runs four specialist reviewers in parallel, optionally
 pauses for a human, and publishes a single consolidated Markdown report.
 
 ```
-┌── Validate ─┬─→ Dependency ─┐
-              ├─→ Injection   ├─→ Aggregate ─→ Exploit proposals ─→ Publish
-              └─→ OWASP 10    ┘                  (human-approved, capped)
+┌── Validate ─┬─→ Dependency    ─┐
+              ├─→ Injection      ├─→ Aggregate ─→ Exploit proposals ─→ Publish
+              ├─→ OWASP 10       │     (human-approved, capped)
+              └─→ Configuration ─┘
 ```
 
 Two modes share the same pipeline:
@@ -18,7 +19,8 @@ Two modes share the same pipeline:
 - **PR mode** — review a PR diff, post a top-level comment on the PR.
 - **Repo mode** — shallow-clone a repo and walk it per-specialist
   (one LLM call per file), save a Markdown report locally and link to
-  it from the chat.
+  it from the chat. Active runs are visible in the UI's "Active reviews"
+  panel and can be cancelled with a Stop button.
 
 Architecturally inspired by a sibling code-review tool for GitLab+Slack,
 but ia-reviewer is scoped to **GitHub only**, **without Slack**, and
@@ -272,15 +274,21 @@ log, HTTPS, browser CSP. See [Threat model: not in scope](docs/security-checklis
 Working end-to-end:
 
 - Both review modes (PR + repo).
-- Three reviewers in parallel with per-specialist whitelists in repo
-  mode.
+- **Four reviewers** in parallel (Dependency / Injection / OWASP /
+  Configuration) with per-specialist whitelists in repo mode.
 - Two-stage validator (pure-code + LLM judge), Phase B re-review,
   Phase C exploit-proposal with human approval + 60-second timeout.
+- **Stop button** to cancel an in-flight review (`POST /reviews/{id}/cancel`).
+- **Active reviews** panel: see all in-flight runs across browser tabs,
+  click to switch into one.
 - Resumable graph via `AsyncPostgresSaver` (or degraded-but-functional
   mode without a checkpointer).
 - Langfuse tracing across initial reviews and resume-after-interrupt.
 - Self-contained UI (no build step) with branch-aware workflow
-  visualisation.
+  visualisation, dark theme (persisted), Markdown-table rendering for
+  the Summary block.
+- **3-tier UI testing**: static template lint + Playwright e2e (5
+  scenarios). See [`docs/ui-testing.md`](docs/ui-testing.md).
 
 ## License
 

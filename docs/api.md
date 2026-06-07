@@ -137,6 +137,48 @@ curl -s http://localhost:8000/reviews/<thread_id>
 - **404** `{"detail": "review not found"}` when missing.
 - **404** `{"detail": "review store not enabled"}` when `DATABASE_URL` is unset.
 
+## `GET /reviews/active` — in-flight reviews
+
+Returns reviews currently running (registered via
+`ActiveReviewsRegistry`). Pure in-memory snapshot; ordered by
+`started_at` ascending so the longest-running run is first.
+
+```bash
+curl -s http://localhost:8000/reviews/active
+# [
+#   {"thread_id": "...", "mode": "repo",
+#    "target": "https://github.com/owner/repo",
+#    "ref": "main",
+#    "started_at": 12345.6, "elapsed_s": 42},
+#   ...
+# ]
+```
+
+Backs the UI's "Active reviews" panel (poll every 5 s). Empty list
+when no reviews are running.
+
+## `POST /reviews/{thread_id}/cancel` — stop an in-flight review
+
+Cooperatively cancels the underlying `asyncio.Task`. The review
+coroutine catches `CancelledError`, broadcasts
+"Review cancelled by user." into the chat, runs `finally:` cleanup
+(snapshot rm, registry unregister), and exits without persisting a
+partial state to the DB.
+
+```bash
+curl -s -X POST http://localhost:8000/reviews/<thread_id>/cancel
+# 200 → {"status": "cancelled", "thread_id": "..."}
+# 404 → {"detail": "no cancellable review"} when:
+#   - the thread_id is unknown
+#   - the task hasn't been attached yet (sub-millisecond race window)
+#   - the task already finished
+```
+
+Backs the UI's per-row Stop button. The button confirms before
+sending (`confirm("Stop this review?")`), and refreshes the active
+list immediately on response so the row disappears as soon as the
+registry drops the entry.
+
 ## `GET /chat/{thread_id}/history` — replay chat
 
 ```bash

@@ -7,39 +7,76 @@ bundler), readable in 30 seconds.
 ## Layout
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│  🦓  ia-reviewer                                                │
-│      Multi-agent security review for GitHub …                   │
-├──────────────┬──────────────────────────────────────────────────┤
-│ WORKFLOW     │ Trigger a review                                 │
-│  ○ Download  │  [https://github.com/owner/repo  or .../pull/N ] │
-│  ○ Validate  │  [ref optional]               [ Review ]         │
-│    tree      │  Review started …                                │
-│  ○ Security  │                                                  │
-│    reviewers │ Chat — thread <uuid>                             │
-│    ○ Dep.    │  [agent] Review complete. Full report: /…md      │
-│    ○ Inj.    │  …                                               │
-│    ○ OWASP   │  [Type a message…]            [ Send ]           │
-│  ○ Review    │                                                  │
-│    decision  │ Final report                       [view raw .md]│
-│  ○ Aggregate │  ## Security review                              │
-│  ○ Exploit   │  **Repository:** …                               │
-│    proposals │  …                                               │
-│  ○ Publish   │                                                  │
-│  ○ Rejected  │                                                  │
-└──────────────┴──────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│  🐴  ia-reviewer                          [☀ Light]  View traces ↗│
+│      Multi-agent security review for GitHub …                    │
+├───────────────┬──────────────────────────────────────────────────┤
+│ WORKFLOW      │ Trigger a review                                 │
+│  ● Download   │  [https://github.com/owner/repo  or .../pull/N ] │
+│  ● Validate   │  [ref optional]                  [ Review ]      │
+│    tree       │  Review started …                                │
+│  ◐ Security   │                                                  │
+│    reviewers  │ Chat — thread <uuid>                             │
+│    ● Dep.     │  [agent] Review complete. Full report: /…md      │
+│    ● Inj.     │                                                  │
+│    ● OWASP    │ Final report                       [view raw .md]│
+│    ● Config.  │  ## Security review                              │
+│  ◯ Review     │  Summary                                         │
+│    decision   │  ┌──────────┬──────┬──────┬──────┬──────┬──────┐ │
+│  ◯ Aggregate  │  │ Severity │ Dep. │ Inj. │ OWASP│Config│Total │ │
+│  ◯ Publish    │  │ Critical │  0   │  2   │  1   │  1   │  4   │ │
+│  ◯ Exploit    │  └──────────┴──────┴──────┴──────┴──────┴──────┘ │
+│  ◯ Rejected   │                                                  │
+├───────────────┤                                                  │
+│ PER-FILE SCAN │                                                  │
+│  Injection    │                                                  │
+│  ████░░░ 12/54│                                                  │
+│ skipped 104   │                                                  │
+│ test          │                                                  │
+│  OWASP 8/56   │                                                  │
+│  Configuration│                                                  │
+│  done (6/6)   │                                                  │
+├───────────────┤                                                  │
+│ ACTIVE        │                                                  │
+│ REVIEWS  1    │                                                  │
+│ ● repo  35s   │                                                  │
+│   owner/repo  │                                                  │
+│        [Stop] │                                                  │
+├───────────────┤                                                  │
+│ PAST REVIEWS  │                                                  │
+│  critical 47  │                                                  │
+│  major    3   │                                                  │
+└───────────────┴──────────────────────────────────────────────────┘
 ```
 
-Three columns of real content:
+Sidebar (left) has four panels:
 
-- **Left (workflow)** — vertical list of graph nodes, each with a
-  status dot that changes colour as the review progresses.
-- **Right top (form)** — single text field for any GitHub URL
-  (auto-detected as PR or repo) + optional `ref` for repo-mode.
-- **Right middle (chat)** — WebSocket-backed conversation tied to the
-  current `thread_id`. Replays history on connect.
-- **Right bottom (report)** — rendered Markdown of the final report.
-  Hidden until the review reaches publish.
+- **Workflow** — vertical list of graph nodes, each with a status dot
+  that changes colour as the review progresses. `Security reviewers`
+  has a nested fan-out: Dependency / Injection / OWASP / **Configuration**
+  (split out of OWASP — A05 misconfig, A07 default-creds, exposed
+  secrets all live here now).
+- **Per-file scan** — visible in repo-mode. One progress bar per
+  reviewer (`Injection 12/54`), plus a `skipped 104 test (out of scope)`
+  line per role (purpose-based file filter — see
+  [`src/scanners/file_classifier.py`](../src/scanners/file_classifier.py)).
+- **Active reviews** — in-flight runs across all browser tabs (polled
+  every 5 s from `GET /reviews/active`). Each row has elapsed time
+  and a red **Stop** button that calls `POST /reviews/{id}/cancel`
+  (cooperative cancellation — see
+  [`docs/api.md`](api.md#post-reviewsthread_idcancel--stop-an-in-flight-review)).
+  Clicking the row opens that thread in a new tab.
+- **Past reviews** — most recent persisted runs from the DB.
+
+Right side: form + chat + final report (Markdown rendered with
+support for headings / bullets / fenced code / **tables** / inline
+links).
+
+### Theme
+
+Top-right toggle switches light/dark. Choice persists via
+`localStorage` key `ia-reviewer-theme`; first-load fallback follows
+the OS-level `prefers-color-scheme` media query.
 
 ## URL auto-detection
 

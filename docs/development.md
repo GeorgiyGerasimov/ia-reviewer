@@ -79,8 +79,9 @@ Mock at the boundary, not deep in the call stack.
 | Layer | Where | What |
 |---|---|---|
 | Unit | `tests/unit/` | Pure logic, zero I/O. Routing functions, parsers, block builders, `_parse_response`. |
-| Integration | `tests/integration/` | One component, all external deps mocked. `agent.run()`, `client.fetch_pr()`, `coordinator.publish()`. |
+| Integration | `tests/integration/` | One component, all external deps mocked. `agent.run()`, `client.fetch_pr()`, `coordinator.publish()`. Also Tier-1 UI static checks (`test_ui_template_*.py`). |
 | E2E | `tests/e2e/` | Full LangGraph run; external I/O mocked. Validates contracts that span the whole graph (parallel fan-out, accept/reject paths, no-checkpointer degradation). |
+| UI e2e | `tests/e2e/playwright/` | Tier-3 UI tests: headless Chromium against a real FastAPI app with every external dep stubbed (~7 s for all 5 scenarios). See [`docs/ui-testing.md`](ui-testing.md). |
 
 ### Fixtures live in `tests/fixtures/` as real files
 
@@ -91,16 +92,26 @@ large strings in test code.
 ## Running tests
 
 ```bash
-.venv/bin/pytest                  # all
+.venv/bin/pytest                  # all (including Playwright if installed)
 .venv/bin/pytest tests/unit       # fast feedback loop
 .venv/bin/pytest tests/integration
 .venv/bin/pytest tests/e2e
+.venv/bin/pytest --ignore=tests/e2e/playwright   # everything except UI tier 3
 .venv/bin/pytest -x -q            # stop on first failure, quiet
 .venv/bin/pytest -k "exploit"     # filter by name substring
 ```
 
-The full suite runs in ~5s on an M-series Mac. CI should run all three
-layers.
+Or via Makefile:
+
+```bash
+make test-fast        # unit + integration + non-Playwright e2e (~10 s)
+make playwright       # UI tier 3 only, with screenshot/video on failure
+make test-all         # everything
+```
+
+Non-Playwright suite runs in ~10 s on an M-series Mac. Playwright
+adds ~7 s for 5 scenarios. CI runs them in parallel jobs — see
+[`.github/workflows/ci.yml`](../.github/workflows/ci.yml).
 
 ## Linting
 
@@ -125,18 +136,37 @@ lives in [CLAUDE.md](../CLAUDE.md); the rules themselves are in:
 
 ## Adding a new reviewer
 
-The three security reviewers all inherit from
-[`BaseReviewer`](../src/agents/base_reviewer.py). A new reviewer is:
+The four security reviewers (Dependency, Injection, OWASP Top 10,
+Configuration) all extend either
+[`LLMPerFileReviewer`](../src/agents/base_reviewer.py) (one LLM call
+per matched file — used by Injection / OWASP / Configuration) or
+[`ScriptedScannerReviewer`](../src/agents/base_reviewer.py) (deterministic
+scan + optional summary LLM — used by Dependency via OSV.dev). Pick
+the strategy that fits before subclassing `BaseReviewer` directly.
 
-1. Subclass `BaseReviewer`, set `role`, `description`, `prompt_template`,
-   and `PATH_PATTERNS`.
+A new reviewer is:
+
+1. Subclass `LLMPerFileReviewer` or `ScriptedScannerReviewer`, set
+   `role`, `description`, `prompt_template`, `PATH_PATTERNS`, and
+   `SKIP_CATEGORIES`.
 2. Add the role string to `ALLOWED_SCOPE_ROLES` in
    [`src/graph/state.py`](../src/graph/state.py).
 3. Wire it into [`build_review_graph`](../src/graph/coordinator.py) —
    accept the agent in the signature, default-construct it, add a node
    for it, and include it in the `_SECURITY_NODES` tuple so the fan-out
    reaches it.
-4. Add a render label in `CoordinatorAgent._render_report._ROLE_LABELS`.
+4. Add a render label in
+   [`src/agents/report_renderer.py::_ROLE_LABELS`](../src/agents/report_renderer.py).
+5. Update the **UI**: extend the `Security reviewers` branch in
+   `templates/index.html` with a new `<div data-node="{role}_review">`
+   AND add the role to the five JS constants
+   (`SECURITY_NODES` / `NEXT_AFTER` / `ACCEPT_PATH_NODES` /
+   `ROLE_LABELS` / `ROLE_ORDER`) plus the `handleValidationResult`
+   cascade. The smoke test
+   [`tests/integration/test_ui_template_reviewers_sync.py`](../tests/integration/test_ui_template_reviewers_sync.py)
+   enforces all five spots — it'll fail loudly if you forget one.
+6. Update [`docs/repo-mode.md`](repo-mode.md) with the new whitelist
+   and any boundary changes to existing reviewers.
 5. Add fixtures + tests:
    - Unit test for the path filter (`tests/unit/test_reviewer_path_filters.py`).
    - Integration test for the agent's `_run_pr` (PR-mode) and `_run_repo`
