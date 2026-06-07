@@ -26,12 +26,25 @@ The deliberate boundary is that nothing in `web/` imports anything from
 - **TypeScript** — strict mode, no `any`
 - **Vite** — dev server + bundler
 - **Tailwind CSS v4** — utility-first styling (CSS-first config via `@theme`)
+- **shadcn/ui** — Radix-primitive components, source copied into `src/components/ui/`
 - **Vitest** — Jest-compatible test runner with native ESM
 - **React Testing Library** — DOM-first component tests
 - **ESLint** (flat config) + **Prettier** — lint + format
 - **jsdom** — DOM environment for component tests
 
-shadcn/ui (Radix primitives, copy-into-repo components) will land in the next PR.
+### shadcn workflow
+
+```bash
+# Add a component (puts source under src/components/ui/<name>.tsx).
+# All shadcn add calls go through the @/ → src/ alias declared in
+# tsconfig.json + vite.config.ts.
+npx shadcn@latest add <component>
+
+# Overwrite an existing component (after a shadcn upstream update).
+npx shadcn@latest add <component> --overwrite
+```
+
+`@/lib/utils.ts` exposes the standard `cn(…classes)` helper (clsx + tailwind-merge). Use it whenever you compose class strings from props.
 
 ## Layout
 
@@ -65,11 +78,19 @@ web/
 - Pure logic goes in `lib/`. No DOM, no React, no fetch.
 - API calls go through `api/client.ts`. Components never call `fetch`
   directly — they receive data via props from a hook or container.
-- Styles use **Tailwind utility classes** on the JSX. The runtime
+- Components we own go in `components/`. shadcn-vendored components
+  go in `components/ui/` — those files are upstream code; treat
+  edits the same as forking. To pick up shadcn updates re-run
+  `npx shadcn@latest add <name> --overwrite`.
+- Styles use **Tailwind v4 utility classes** on the JSX. The runtime
   palette and design tokens live in `styles/globals.css` as CSS
-  variables (`--text`, `--muted`, `--accent`, …) and are bridged to
-  Tailwind utilities (`text-text`, `text-muted`, `bg-accent`, …) via
-  the `@theme inline` block. Dark mode flips through
+  variables using the canonical shadcn vocabulary
+  (`--background`, `--foreground`, `--primary`, `--card`,
+  `--muted-foreground`, `--border`, …) plus a handful of domain
+  extras for this project (`--severity-critical`, `--done`,
+  `--notice-bg`, …). They're bridged to Tailwind utilities
+  (`bg-background`, `text-muted-foreground`, `border-border`, …)
+  via the `@theme inline` block. Dark mode flips through
   `[data-theme="dark"]` on `<html>` — the boot script in `index.html`
   sets it before stylesheet parsing. `dark:` Tailwind variants work
   via the `@custom-variant dark` declaration in `globals.css`.
@@ -147,8 +168,8 @@ panels are migrating from `templates/index.html` piece by piece:
 | `format.ts`       | ✅     | Pure helpers extracted with tests              |
 | `markdown.ts`     | ✅     | Tiny renderer with tests                       |
 | `TokenSummary`    | ✅     | Reference component (Tailwind utilities)       |
-| shadcn/ui init    | TODO   | components.json + lib/utils.ts (cn helper)     |
-| shadcn batch 1    | TODO   | Button, Card, Dialog, Drawer, Sheet, Tabs, …   |
+| shadcn/ui init    | ✅     | components.json + lib/utils.ts (cn helper)     |
+| shadcn batch 1    | ✅     | Button, Card, Dialog, Sheet, Tabs, Badge, Tooltip + 6-test smoke suite on Button |
 | API client        | TODO   | Typed `fetch` wrappers, hook layer             |
 | WorkflowDiagram   | TODO   | Left-rail step indicators                      |
 | ActiveReviews     | TODO   | Sidebar list with live token counter           |

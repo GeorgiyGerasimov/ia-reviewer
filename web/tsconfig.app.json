@@ -23,7 +23,17 @@
     "noUncheckedSideEffectImports": true,
 
     /* Vitest + jest-dom provide the global `expect` augmentation. */
-    "types": ["vitest/globals", "@testing-library/jest-dom"]
+    "types": ["vitest/globals", "@testing-library/jest-dom"],
+
+    /* `@/*` → `src/*` matches the canonical shadcn / Vite convention.
+       Components copied in via `npx shadcn add …` use this alias
+       (e.g. `import { cn } from "@/lib/utils"`); the same alias
+       must be configured in vite.config.ts so the bundler resolves
+       it identically. */
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./src/*"]
+    }
   },
   "include": ["src"]
 }

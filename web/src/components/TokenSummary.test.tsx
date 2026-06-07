@@ -38,10 +38,10 @@ describe("<TokenSummary />", () => {
     // sidebar line doesn't jump styling when the first LLM call lands.
     const { rerender } = render(<TokenSummary input={0} output={0} calls={0} />);
     const empty = screen.getByLabelText("No LLM activity yet");
-    expect(empty).toHaveClass("font-mono", "text-muted", "tabular-nums");
+    expect(empty).toHaveClass("font-mono", "text-muted-foreground", "tabular-nums");
 
     rerender(<TokenSummary input={100} output={20} calls={1} />);
     const active = screen.getByLabelText("Token usage so far");
-    expect(active).toHaveClass("font-mono", "text-muted", "tabular-nums");
+    expect(active).toHaveClass("font-mono", "text-muted-foreground", "tabular-nums");
   });
 });

@@ -33,4 +33,18 @@ export default tseslint.config(
       ],
     },
   },
+  {
+    // shadcn/ui components are vendored from upstream — they
+    // intentionally co-export non-component variants
+    // (`buttonVariants`, `tabsListVariants`, …) so consumers can
+    // apply the same cva classes elsewhere. That trips the
+    // react-refresh single-export rule, which exists only for hot-
+    // reload speed, not correctness. We re-vendor these files via
+    // `npx shadcn add --overwrite`, so reformatting them by hand to
+    // appease the rule would just churn on every shadcn update.
+    files: ["src/components/ui/**/*.{ts,tsx}"],
+    rules: {
+      "react-refresh/only-export-components": "off",
+    },
+  },
 );
