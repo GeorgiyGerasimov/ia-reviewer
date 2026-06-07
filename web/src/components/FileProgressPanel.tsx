@@ -131,7 +131,7 @@ export function FileProgressPanel({ roleEnvelopes }: FileProgressPanelProps) {
                     : `${s.done}/${s.total}`}
                 </span>
               </div>
-              <div className="mt-1 h-1 rounded-full bg-muted overflow-hidden">
+              <div className="mt-1 h-2 rounded-full border border-border bg-muted/40 overflow-hidden">
                 <div
                   className="h-full bg-primary transition-[width] duration-200"
                   style={{ width: `${s.pct}%` }}

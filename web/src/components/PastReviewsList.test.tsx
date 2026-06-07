@@ -16,8 +16,9 @@ function row(over: Partial<ReviewSummary> = {}): ReviewSummary {
     thread_id: "tid",
     mode: "pr",
     target_url: "https://github.com/o/r/pull/42",
-    severity: "major",
-    findings_count: 3,
+    overall_severity: "major",
+    finding_count: 3,
+    validation_accepted: true,
     created_at: "2026-06-07T00:00:00Z",
     ...over,
   };
@@ -72,8 +73,8 @@ describe("<PastReviewsList />", () => {
     // operators don't confuse them with successful runs.
     render(
       <PastReviewsList
-        items={[row({ thread_id: "x", severity: "rejected", rejected: true,
-          findings_count: 0 })]}
+        items={[row({ thread_id: "x", overall_severity: "rejected", validation_accepted: false,
+          finding_count: 0 })]}
         currentThreadId={null}
         onSelect={vi.fn()}
       />,
@@ -88,7 +89,7 @@ describe("<PastReviewsList />", () => {
     // color via `normalizeSeverity` from lib/format.
     render(
       <PastReviewsList
-        items={[row({ thread_id: "x", severity: "CRITICAL" as never })]}
+        items={[row({ thread_id: "x", overall_severity: "CRITICAL" as never })]}
         currentThreadId={null}
         onSelect={vi.fn()}
       />,
@@ -102,7 +103,7 @@ describe("<PastReviewsList />", () => {
   it("shows the findings count next to each row", () => {
     render(
       <PastReviewsList
-        items={[row({ thread_id: "x", findings_count: 7 })]}
+        items={[row({ thread_id: "x", finding_count: 7 })]}
         currentThreadId={null}
         onSelect={vi.fn()}
       />,

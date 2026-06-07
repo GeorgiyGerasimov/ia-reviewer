@@ -28,10 +28,13 @@ const DOT_BG: Record<string, string> = {
 };
 
 function rowSeverity(item: ReviewSummary): string {
-  // Rejected reviews ship `severity: "rejected"` AND `rejected:
-  // true`. Either flag tips us into the red branch.
-  if (item.rejected || item.severity === "rejected") return "rejected";
-  return normalizeSeverity(item.severity);
+  // Rejected reviews ship `overall_severity = "rejected"` AND
+  // `validation_accepted = false`. Either flag tips us into the
+  // red branch — handle both for older rows.
+  if (item.validation_accepted === false || item.overall_severity === "rejected") {
+    return "rejected";
+  }
+  return normalizeSeverity(item.overall_severity ?? "info");
 }
 
 export function PastReviewsList({
@@ -83,7 +86,7 @@ export function PastReviewsList({
                     />
                     <span className="capitalize">{severity}</span>
                     <span className="ml-auto text-muted-foreground font-normal text-[11px] tabular-nums">
-                      {item.findings_count} {item.findings_count === 1 ? "finding" : "findings"}
+                      {item.finding_count} {item.finding_count === 1 ? "finding" : "findings"}
                     </span>
                   </div>
                   <div className="text-foreground text-[11px] overflow-hidden text-ellipsis whitespace-nowrap">

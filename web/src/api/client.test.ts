@@ -66,15 +66,16 @@ describe("api.listReviews", () => {
         thread_id: "abc",
         mode: "pr",
         target_url: "https://github.com/o/r/pull/1",
-        severity: "major",
-        findings_count: 3,
+        overall_severity: "major",
+        finding_count: 3,
+        validation_accepted: true,
         created_at: "2026-06-07T12:00:00Z",
       },
     ]);
     const result = await api.listReviews();
     expect(result).toHaveLength(1);
     expect(result[0].thread_id).toBe("abc");
-    expect(result[0].findings_count).toBe(3);
+    expect(result[0].finding_count).toBe(3);
   });
 });
 

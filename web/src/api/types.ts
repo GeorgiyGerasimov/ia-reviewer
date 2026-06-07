@@ -17,15 +17,26 @@ export type ReviewerRole = "dependency" | "injection" | "owasp" | "configuration
 
 export type Severity = "info" | "minor" | "major" | "critical";
 
-/** GET /reviews — list of past, persisted reviews. */
+/** GET /reviews — list of past, persisted reviews.
+ *
+ *  Field names mirror the Postgres columns surfaced by
+ *  `_LIST_SQL` in `src/storage/review_store.py`: `overall_severity`
+ *  (highest severity across reviewers, or `rejected` when the
+ *  validator rejected), `finding_count` (total across all roles),
+ *  `validation_accepted` (null/true/false from the validator).
+ *  Previous drift here (`severity` / `findings_count` / `rejected`)
+ *  made every row render as "info" with no count. */
 export interface ReviewSummary {
   thread_id: string;
   mode: "pr" | "repo";
   target_url: string;
   ref?: string | null;
-  severity: Severity | "rejected";
-  findings_count: number;
-  rejected?: boolean;
+  overall_severity: Severity | "rejected" | null;
+  finding_count: number;
+  /** Validator branch verdict: true=accepted, false=rejected,
+   *  null=hadn't run / older row. */
+  validation_accepted: boolean | null;
+  validation_category?: string | null;
   created_at: string;
 }
 
