@@ -20,6 +20,7 @@ from pathlib import Path
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from langgraph.types import Command
 
@@ -79,9 +80,45 @@ def _normalize_uvicorn_logging() -> None:
 
 
 def _register_routes(app: FastAPI) -> None:
-    @app.get("/")
-    async def index(request: Request):
-        return _TEMPLATES.TemplateResponse(request, "index.html")
+    # Decide which "/" handler to register. `app.state.web_dist` is set
+    # by `create_test_app(web_dist=...)` or by the production lifespan
+    # (`_build_app`) when a Vite bundle is present at `web/dist/`. A
+    # half-broken bundle — directory exists, `index.html` missing — is
+    # treated as "no bundle" so we never serve a blank SPA shell that
+    # 404s on every asset.
+    web_dist: Path | None = getattr(app.state, "web_dist", None)
+    has_react_shell = (
+        web_dist is not None and (web_dist / "index.html").is_file()
+    )
+
+    if has_react_shell:
+        # `assets/` is where Vite drops hashed JS + CSS chunks. We mount
+        # the directory directly; StaticFiles handles range + ETag +
+        # 404 semantics without bespoke code.
+        assets_dir = web_dist / "assets"
+        if assets_dir.is_dir():
+            app.mount(
+                "/assets",
+                StaticFiles(directory=str(assets_dir)),
+                name="assets",
+            )
+
+        _react_index = web_dist / "index.html"
+
+        @app.get("/")
+        async def index_react() -> FileResponse:
+            """Serve the Vite-built SPA shell. Bypasses Jinja entirely
+            in production — the legacy template only matters in dev
+            against a fresh checkout without `npm run build`."""
+            return FileResponse(_react_index, media_type="text/html")
+    else:
+        @app.get("/")
+        async def index_jinja(request: Request):
+            """Legacy template fallback — runs when no `web/dist/`
+            bundle is shipped (dev with `uvicorn main:app` against a
+            fresh checkout, or a Docker build that intentionally skipped
+            the web-builder stage)."""
+            return _TEMPLATES.TemplateResponse(request, "index.html")
 
     @app.get("/img.png")
     async def img() -> FileResponse:
@@ -1244,6 +1281,7 @@ def create_test_app(
     progress_store: ProgressStore | None = None,
     active_reviews: ActiveReviewsRegistry | None = None,
     exploit_agent=None,
+    web_dist: Path | None = None,
 ) -> FastAPI:
     """Build a test-mode FastAPI app with pre-injected dependencies.
 
@@ -1265,6 +1303,10 @@ def create_test_app(
     app.state.langfuse_callback = langfuse_callback
     app.state.reports_dir = reports_dir or Path(settings.REPORTS_DIR)
     app.state.exploit_agent = exploit_agent
+    # Bundle path is injectable so tests can stage a tmp_path with a
+    # tiny fake `index.html` + `assets/<file>` and verify the React
+    # shell branch without rebuilding the actual Vite output.
+    app.state.web_dist = web_dist
     _register_routes(app)
     return app
 
@@ -1390,6 +1432,13 @@ def _build_app() -> FastAPI:
                 await github.aclose()
 
     app = FastAPI(title="ia-reviewer", version="0.1.0", lifespan=lifespan)
+    # Auto-detect the Vite-built SPA bundle. The Docker build's
+    # `web-builder` stage emits the bundle into `/app/web/dist/`;
+    # `_register_routes` switches to serving it when `index.html` is
+    # present. A fresh checkout without `npm run build` simply has no
+    # such directory and the legacy Jinja shell stays in play —
+    # operators don't need to touch anything to run the project.
+    app.state.web_dist = Path(__file__).parent / "web" / "dist"
     _register_routes(app)
     return app
 

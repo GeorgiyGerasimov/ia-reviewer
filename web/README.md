@@ -140,21 +140,34 @@ npm run build
 
 ## Production serving
 
-`main.py` checks for `web/dist/index.html` at startup. When present, it
-mounts the directory as static and routes `GET /` to the SPA shell.
-Otherwise it falls back to the legacy Jinja template (`templates/index.html`)
-so partial migrations don't break the running app.
+The project's `Dockerfile` is multi-stage:
 
-To produce the SPA bundle during a Docker build:
+1. `py-builder` — installs Python deps.
+2. `web-builder` (this subproject) — runs `npm ci && npm run build`
+   inside `node:22-alpine`. Output lands at `/web/dist/`.
+3. `runtime` — `python:3.11-slim` carrying the Python deps + app
+   code + the SPA bundle COPY'd from `web-builder` into
+   `/app/web/dist/`. No Node, no npm, no source-only files.
 
-```dockerfile
-FROM node:22 AS web-builder
-WORKDIR /app/web
-COPY web/package*.json ./
-RUN npm ci
-COPY web ./
-RUN npm run build
-# … COPY --from=web-builder /app/web/dist /app/web/dist into runtime image
+`main.py::_register_routes` auto-detects the bundle:
+
+- `/app/web/dist/index.html` present → mounts `/assets/*` as static
+  (StaticFiles), routes `GET /` to the React shell, and falls
+  through to FastAPI for everything else (JSON API, WS, /reports/).
+- Bundle missing → keeps the legacy Jinja template at `GET /`. This
+  is what happens on a fresh checkout running `uvicorn main:app`
+  directly without `docker compose build` or local `npm run build`.
+
+Net effect: `docker compose up --build` is the single command to
+ship the React UI. Operators never have to run npm themselves.
+
+For local dev with HMR (Vite dev server, no Docker):
+
+```bash
+# Terminal 1
+uvicorn main:app --host 127.0.0.1 --port 8000
+# Terminal 2
+cd web && npm run dev    # → http://localhost:5173 with proxy
 ```
 
 ## Migration status
