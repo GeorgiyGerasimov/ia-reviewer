@@ -97,17 +97,80 @@ describe("useReview", () => {
     expect(result.current.review?.report_markdown).toBe("## v2");
   });
 
-  it("sets review to null on 404 without throwing", async () => {
+  it("sets review to null on 404 without throwing after exhausting retries", async () => {
     // The race window between submit and the persisted row is
     // expected — useReview shouldn't throw, the panel just shows
     // nothing until the next refresh (driven by WS __done__).
-    stageFetch({ detail: "review not found" }, { status: 404 });
+    // Stage enough 404s to exhaust the retry schedule.
+    for (let i = 0; i < 6; i++) stageFetch({ detail: "review not found" }, { status: 404 });
     const { result } = renderHook(() => useReview("missing"));
+    await act(async () => {
+      // Drain all backoff timers (initial + 5 retries).
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(20_000);
+    });
+    expect(result.current.review).toBeNull();
+    expect(result.current.loading).toBe(false);
+  });
+
+  it("retries on 404 until the row lands (persistence race)", async () => {
+    // _persist_review writes the row AFTER the WS broadcasts
+    // __done__, so the first fetch can race. Same backoff
+    // schedule as useCriticalFindings: 300/600/1200/2400/4800.
+    let attempts = 0;
+    const okBody = JSON.stringify(review({ thread_id: "racey" }));
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      attempts += 1;
+      if (attempts < 3) {
+        return new Response(JSON.stringify({ detail: "review not found" }), {
+          status: 404,
+          headers: { "Content-Type": "application/json" },
+        }) as Response;
+      }
+      return new Response(okBody, {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }) as Response;
+    });
+
+    const { result } = renderHook(() => useReview("racey"));
+    // Drain the first attempt (404).
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
     });
     expect(result.current.review).toBeNull();
+
+    // Drain through the 300ms backoff for attempt 2 (still 404),
+    // then 600ms for attempt 3 (200 OK).
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+      await vi.advanceTimersByTimeAsync(600);
+    });
+    expect(result.current.review?.thread_id).toBe("racey");
     expect(result.current.loading).toBe(false);
+  });
+
+  it("refresh() bypasses the retry loop and fetches once", async () => {
+    // After WS __done__, the parent fires refresh() — that should
+    // hit the endpoint exactly once even if the loop was still
+    // in flight from the initial mount.
+    let attempts = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      attempts += 1;
+      return new Response(JSON.stringify(review({ thread_id: "tid" })), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }) as Response;
+    });
+
+    const { result } = renderHook(() => useReview("tid"));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+      await result.current.refresh();
+    });
+    // Initial mount fetch + refresh = 2 hits. The retry chain
+    // should NOT keep firing once the first 200 came back.
+    expect(attempts).toBe(2);
   });
 
   it("clears review when threadId becomes null", async () => {

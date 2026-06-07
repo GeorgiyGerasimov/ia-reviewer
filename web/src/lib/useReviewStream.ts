@@ -65,6 +65,50 @@ type Action =
   | { kind: "file_progress"; env: FileProgressEnvelope }
   | { kind: "chat"; env: ChatMessageEnvelope };
 
+// Cascade map: when KEY fires (or otherwise reaches a non-active
+// state), mark each VALUE as `active` UNLESS the value is already
+// in a terminal state. Mirrors the legacy template's NEXT_AFTER
+// in templates/index.html. Without this the sidebar's dots stay
+// grey for ~20s during LLM-busy stretches because the backend
+// only emits envelopes on node completion, not entry.
+const CASCADE_ACTIVE: Record<string, readonly string[]> = {
+  clone_repo: ["validate_request"],
+  dependency_review: ["review_decision"],
+  injection_review: ["review_decision"],
+  owasp_review: ["review_decision"],
+  configuration_review: ["review_decision"],
+  review_decision: ["aggregate_results"],
+  aggregate_results: ["publish_report"],
+};
+
+// Set on validate_request acceptance — all four specialists +
+// the synthetic security_reviewers parent start pulsing as soon
+// as the validator clears.
+const ACCEPT_FANOUT = [
+  "dependency_review",
+  "injection_review",
+  "owasp_review",
+  "configuration_review",
+  "security_reviewers",
+] as const;
+
+function isTerminal(s: NodeStatus | undefined): boolean {
+  return s === "fired" || s === "empty" || s === "rejected";
+}
+
+/** Apply an `active` mark to `node` only if it doesn't already
+ *  hold a terminal state. Terminal > active in the legacy UI's
+ *  priority order — a late upstream completion can't downgrade
+ *  a downstream node that already finished. */
+function applyActive(
+  acc: Record<string, NodeStatus>,
+  node: string,
+): Record<string, NodeStatus> {
+  if (isTerminal(acc[node])) return acc;
+  if (acc[node] === "active") return acc;
+  return { ...acc, [node]: "active" };
+}
+
 function reduce(state: ReviewStreamState, action: Action): ReviewStreamState {
   switch (action.kind) {
     case "reset":
@@ -78,9 +122,29 @@ function reduce(state: ReviewStreamState, action: Action): ReviewStreamState {
       if (node === "__done__") return { ...state, isDone: true };
       if (node === "__cancelled__")
         return { ...state, isDone: true, isCancelled: true };
-      const nextStatuses = status
+      let nextStatuses = status
         ? { ...state.nodeStatuses, [node]: status }
         : state.nodeStatuses;
+      // Cascade `active` to successors when this node has reached
+      // a non-active state. We don't cascade on `active` itself —
+      // would create a chain reaction with no observable end.
+      if (status && status !== "active") {
+        for (const successor of CASCADE_ACTIVE[node] ?? []) {
+          nextStatuses = applyActive(nextStatuses, successor);
+        }
+      }
+      // validate_request → if accepted, light up the four
+      // specialists + the synthetic parent. The reject branch
+      // gets its own envelope from the backend (notify_rejection).
+      if (
+        node === "validate_request" &&
+        typeof accepted === "boolean" &&
+        accepted
+      ) {
+        for (const n of ACCEPT_FANOUT) {
+          nextStatuses = applyActive(nextStatuses, n);
+        }
+      }
       const nextValidation =
         node === "validate_request" && typeof accepted === "boolean"
           ? accepted

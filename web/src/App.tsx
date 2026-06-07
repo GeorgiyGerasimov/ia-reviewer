@@ -14,6 +14,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, APIError } from "./api/client";
 import { ActiveReviewsList } from "./components/ActiveReviewsList";
 import { CriticalFindingsPanel } from "./components/CriticalFindingsPanel";
+import { FileProgressPanel } from "./components/FileProgressPanel";
 import { PastReviewsList } from "./components/PastReviewsList";
 import { ReportPanel } from "./components/ReportPanel";
 import { ReviewForm } from "./components/ReviewForm";
@@ -148,6 +149,7 @@ export function App() {
           nodeStatuses={stream.nodeStatuses}
           validationAccepted={stream.validationAccepted}
         />
+        <FileProgressPanel roleEnvelopes={stream.fileProgress} />
         <ActiveReviewsList
           items={activeItems}
           currentThreadId={currentThreadId}

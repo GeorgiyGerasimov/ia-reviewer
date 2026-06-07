@@ -45,6 +45,12 @@ interface Step {
 const STEPS: Step[] = [
   { node: "clone_repo", label: "Download" },
   { node: "validate_request", label: "Validate tree" },
+  // Synthetic parent — backend never emits an envelope for this
+  // node. The UI derives its state from the four child specialists
+  // (see `deriveDerivedStatuses`): all-children-terminal → "fired".
+  // Operators read this row as "what stage of the graph are we in",
+  // distinct from the individual reviewer rows below.
+  { node: "security_reviewers", label: "Security reviewers", branch: "accept" },
   {
     node: "dependency_review",
     label: "Dependency",
@@ -102,7 +108,35 @@ const TEXT_BY_STATUS: Record<NodeStatus | "pending", string> = {
   rejected: "text-destructive",
 };
 
+const SECURITY_CHILDREN = [
+  "dependency_review",
+  "injection_review",
+  "owasp_review",
+  "configuration_review",
+] as const;
+
+// Derive synthetic node statuses the backend doesn't emit.
+// Today: only `security_reviewers`. Becomes "fired" once every
+// child specialist has reached a terminal state (fired / empty /
+// rejected). Until then, the parent stays at whatever the
+// upstream cascade set — typically "active" once validate_request
+// accepted (set by useReviewStream), so the parent dot pulses
+// while the children are in flight.
+function deriveDerivedStatuses(
+  raw: Record<string, NodeStatus>,
+): Record<string, NodeStatus> {
+  const terminal = (s: NodeStatus | undefined): boolean =>
+    s === "fired" || s === "empty" || s === "rejected";
+  const allDone = SECURITY_CHILDREN.every((n) => terminal(raw[n]));
+  if (!allDone) return raw;
+  // Don't override a backend-emitted value if the parent ever
+  // gets one in the future — only fill in when absent.
+  if (raw.security_reviewers && terminal(raw.security_reviewers)) return raw;
+  return { ...raw, security_reviewers: "fired" };
+}
+
 export function WorkflowDiagram({ nodeStatuses, validationAccepted }: WorkflowDiagramProps) {
+  const effectiveStatuses = deriveDerivedStatuses(nodeStatuses);
   return (
     <div className="rounded-xl border border-border bg-background p-4">
       <h3 className="mb-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
@@ -110,7 +144,7 @@ export function WorkflowDiagram({ nodeStatuses, validationAccepted }: WorkflowDi
       </h3>
       <ol className="flex flex-col gap-1.5 list-none p-0 m-0">
         {STEPS.map((step) => {
-          const status = nodeStatuses[step.node] ?? "pending";
+          const status = effectiveStatuses[step.node] ?? "pending";
           const branch = branchState(step, validationAccepted);
           const isChild = step.level === "child";
           return (
