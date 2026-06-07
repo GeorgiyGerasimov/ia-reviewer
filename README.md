@@ -137,17 +137,26 @@ cp .env.example .env
 docker compose up -d --build   # app + postgres + langfuse-web + langfuse-worker + clickhouse + redis + minio
 ```
 
-The `--build` flag triggers the multi-stage `Dockerfile`:
+`--build` triggers **two independent images** with strict separation:
 
-1. `py-builder` — installs Python deps.
-2. `web-builder` (`node:22-alpine`) — runs `npm ci && npm run build`
-   inside the image. **No local Node toolchain required.**
-3. `runtime` — minimal `python:3.11-slim` carrying the Python deps
-   + app code + the built React SPA at `/app/web/dist/`.
+1. **`Dockerfile`** (backend) — `python:3.11-slim` carrying Python
+   deps + app code. No frontend assets, no Node, no `web/`.
+2. **`web/Dockerfile`** (frontend) — `node:22-alpine` builds the
+   Vite SPA inside the image (no local Node needed), then
+   `nginx:alpine` serves the bundle + reverse-proxies `/health`,
+   `/review`, `/reviews/*`, `/reports/*`, `/chat/*`, `/img.png`,
+   `/ws/*` to the `app` service. See `web/nginx.conf` for the
+   exact map.
 
-The shipped image has no `npm`, no `node_modules`, no `web/src/` —
-just the hashed Vite output that FastAPI mounts. To rebuild after
-pulling new commits: `docker compose up -d --build app`.
+The two images share nothing source-level. Either can be redeployed
+or moved to a different host (SPA to a CDN, backend behind a load
+balancer) without code changes. To rebuild a specific side after
+pulling new commits: `docker compose up -d --build app` or
+`docker compose up -d --build web`.
+
+The user-facing URL is unchanged: nginx exposes `${IA_PORT:-8000}`
+on the host; the backend is `expose:`-only inside the compose
+network.
 
 Open <http://localhost:8000> for the review UI and <http://localhost:3000>
 for Langfuse traces (login `dev@local.dev` / `localdev123!`, self-seeded on
