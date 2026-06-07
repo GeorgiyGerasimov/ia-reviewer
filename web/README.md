@@ -171,8 +171,8 @@ panels are migrating from `templates/index.html` piece by piece:
 | shadcn/ui init    | ✅     | components.json + lib/utils.ts (cn helper)     |
 | shadcn batch 1    | ✅     | Button, Card, Dialog, Sheet, Tabs, Badge, Tooltip + 6-test smoke suite on Button |
 | API client        | ✅     | `src/api/{types,client}.ts` — typed wrappers + APIError; 19 tests |
-| WebSocket hook    | TODO   | `src/lib/useReviewStream.ts` — open WS, parse envelopes |
-| WorkflowDiagram   | TODO   | Left-rail step indicators                      |
+| WebSocket hook    | ✅     | `src/lib/useReviewStream.ts` — per-node status + validator verdict + chat messages from `/ws/chat/{tid}`; 14 tests via `MockWebSocket` |
+| WorkflowDiagram   | ✅     | Left-rail step indicators (pure props; parent wires hook); 9 tests |
 | ActiveReviews     | TODO   | Sidebar list with live token counter           |
 | PastReviews       | TODO   | Sidebar list, GET /reviews                     |
 | ReviewForm        | TODO   | PR/repo URL submit                             |
