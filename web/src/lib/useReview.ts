@@ -96,10 +96,15 @@ export function useReview(threadId: string | null): UseReviewResult {
   useEffect(() => {
     isMountedRef.current = true;
     cancelPendingRetry();
+    // Always reset on threadId change. Two scenarios:
+    //   * threadId → null: switching away from any review.
+    //   * tid A → tid B (both non-null): switching between reviews.
+    // Without this synchronous reset, the panel would keep showing
+    // the previous review's data while the new fetch is in flight —
+    // particularly painful for an in-progress review whose 404
+    // retry chain runs for ~10s before giving up.
+    setReview(null);
     if (!threadId) {
-      // Switching away from a thread wipes the panel — otherwise
-      // stale data lingers.
-      setReview(null);
       setLoading(false);
       return;
     }

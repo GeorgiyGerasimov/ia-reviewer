@@ -99,8 +99,11 @@ export function useCriticalFindings(
   useEffect(() => {
     isMountedRef.current = true;
     cancelPendingRetry();
+    // Always clear on threadId change — including A→B switches —
+    // so the panel doesn't show the previous review's findings
+    // while the new fetch's retry chain is in flight.
+    setFindings([]);
     if (!threadId) {
-      setFindings([]);
       setLoading(false);
       return;
     }
