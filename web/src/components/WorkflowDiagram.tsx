@@ -23,6 +23,11 @@ export interface WorkflowDiagramProps {
    *   `false` → reviewer chain + join nodes never fire, dim them.
    *   `null`  → validator hasn't run yet, leave both branches alive. */
   validationAccepted: boolean | null;
+  /** Run has reached a terminal state — either `__done__` ran end-to-end
+   *  or Stop fired `__cancelled__`. Anything still pending/active is
+   *  coerced to `empty` so the sidebar shows the final shape (no
+   *  pulsing dots after the WS terminates). */
+  terminal?: boolean;
 }
 
 // Steps + their display labels. Order matches the runtime flow.
@@ -135,8 +140,29 @@ function deriveDerivedStatuses(
   return { ...raw, security_reviewers: "fired" };
 }
 
-export function WorkflowDiagram({ nodeStatuses, validationAccepted }: WorkflowDiagramProps) {
-  const effectiveStatuses = deriveDerivedStatuses(nodeStatuses);
+/** When the run terminated, coerce any node that didn't reach a
+ *  terminal state (still active or never set) to `empty`. Mirrors
+ *  the legacy template's `finalizeWorkflow` — once the WS terminates
+ *  there's no point in leaving dots pulsing. */
+function coerceTerminal(
+  statuses: Record<string, NodeStatus>,
+): Record<string, NodeStatus> {
+  const out: Record<string, NodeStatus> = { ...statuses };
+  for (const step of STEPS) {
+    const s = out[step.node];
+    if (s === "fired" || s === "empty" || s === "rejected") continue;
+    out[step.node] = "empty";
+  }
+  return out;
+}
+
+export function WorkflowDiagram({
+  nodeStatuses,
+  validationAccepted,
+  terminal = false,
+}: WorkflowDiagramProps) {
+  const derived = deriveDerivedStatuses(nodeStatuses);
+  const effectiveStatuses = terminal ? coerceTerminal(derived) : derived;
   return (
     <div className="rounded-xl border border-border bg-background p-4">
       <h3 className="mb-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">

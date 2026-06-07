@@ -157,6 +157,39 @@ describe("<WorkflowDiagram />", () => {
     );
   });
 
+  it("paints all non-terminal nodes as empty (skipped) when the run terminated", () => {
+    // After Stop is clicked the WS emits __cancelled__; useReviewStream
+    // sets isDone+isCancelled. App passes `terminal=true` to the diagram
+    // so anything still pending/active drops to grey — operators
+    // shouldn't see a node pulsing forever after Stop.
+    render(
+      <WorkflowDiagram
+        nodeStatuses={{
+          clone_repo: "fired",
+          validate_request: "fired",
+          dependency_review: "active",
+        }}
+        validationAccepted={true}
+        terminal={true}
+      />,
+    );
+    // The completed node stays green.
+    expect(screen.getByTestId("wf-step-clone_repo")).toHaveAttribute(
+      "data-status",
+      "fired",
+    );
+    // The active one downgrades to empty.
+    expect(screen.getByTestId("wf-step-dependency_review")).toHaveAttribute(
+      "data-status",
+      "empty",
+    );
+    // A node that never fired also reads as empty (rather than pending).
+    expect(screen.getByTestId("wf-step-publish_report")).toHaveAttribute(
+      "data-status",
+      "empty",
+    );
+  });
+
   it("renders the Dependency badge marking it as deterministic (OSV.dev)", () => {
     // Tooltip carries the longer explanation; the badge label is
     // just `OSV.dev` to keep the sidebar compact.

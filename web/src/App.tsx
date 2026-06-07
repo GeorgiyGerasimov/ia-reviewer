@@ -23,6 +23,7 @@ import { TokenUsagePanel } from "./components/TokenUsagePanel";
 import { WorkflowDiagram } from "./components/WorkflowDiagram";
 import { useActiveReviews } from "./lib/useActiveReviews";
 import { useCriticalFindings } from "./lib/useCriticalFindings";
+import { useHealth } from "./lib/useHealth";
 import { usePastReviews } from "./lib/usePastReviews";
 import { useReview } from "./lib/useReview";
 import { useReviewStream } from "./lib/useReviewStream";
@@ -39,6 +40,7 @@ export function App() {
     () => new Set(),
   );
 
+  const { health } = useHealth();
   const { items: activeItems, refresh: refreshActive } = useActiveReviews();
   const { items: pastItems, refresh: refreshPast } = usePastReviews();
   const { review, loading: reviewLoading, refresh: refreshReview } = useReview(
@@ -140,6 +142,22 @@ export function App() {
             snapshot.
           </p>
         </div>
+        {health?.langfuse_url && (
+          <a
+            href={health.langfuse_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            data-testid="langfuse-link"
+            className={
+              "inline-flex items-center gap-1 px-3 py-1.5 rounded-full " +
+              "border border-border bg-card text-foreground text-xs font-medium " +
+              "hover:bg-accent transition-colors"
+            }
+            title="Open Langfuse trace dashboard in a new tab"
+          >
+            View traces ↗
+          </a>
+        )}
         <ThemeToggle />
       </header>
 
@@ -148,6 +166,7 @@ export function App() {
         <WorkflowDiagram
           nodeStatuses={stream.nodeStatuses}
           validationAccepted={stream.validationAccepted}
+          terminal={stream.isDone}
         />
         <FileProgressPanel roleEnvelopes={stream.fileProgress} />
         <ActiveReviewsList

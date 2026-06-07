@@ -23,8 +23,9 @@ function summary(over: Partial<Record<string, unknown>> = {}) {
     thread_id: "tid",
     mode: "repo",
     target_url: "https://github.com/o/r",
-    severity: "major",
-    findings_count: 3,
+    overall_severity: "major",
+    finding_count: 3,
+    validation_accepted: true,
     created_at: "2026-06-07T00:00:00Z",
     ...over,
   };
