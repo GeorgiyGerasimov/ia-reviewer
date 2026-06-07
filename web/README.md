@@ -1,8 +1,12 @@
 # ia-reviewer-web
 
 React frontend for ia-reviewer. Lives as a separate subproject inside the
-main repo. Built with Vite; served by FastAPI from `web/dist/` once the
-migration off `templates/index.html` is complete.
+main repo. Built with Vite into `web/dist/` and served in production
+by a dedicated `nginx:alpine` container (`web/Dockerfile`), which
+also reverse-proxies API + WebSocket routes to the `app` container.
+The legacy Jinja template at `templates/index.html` is retained as
+a debug fallback for direct `uvicorn` runs but is **not** reachable
+through the compose stack.
 
 ## Why a subproject (not a sibling repo)
 

@@ -67,20 +67,26 @@ defensive skip on empty `thread_id` now, so this no longer leaks —
 delete the stale file and confirm the tests aren't writing fresh ones
 with `pytest -q && ls reports/`.
 
-## "address already in use" on uvicorn start
+## "address already in use" on port 8000
 
-Another uvicorn from a previous session is holding port 8000.
+Compose maps the `web` (nginx) service to `${IA_PORT:-8000}` on the
+host. Something else (a previous `docker compose` instance, or an old
+`uvicorn` you ran outside Docker) is holding the port.
 
 ```bash
-lsof -i :8000              # find PID
-pkill -f "uvicorn main:app"
-# or, less politely:
+lsof -i :8000                       # find what's holding it
+docker compose down                  # stop the stack cleanly
+docker compose up -d --build         # restart
+```
+
+If a stray `uvicorn` is the offender (legacy dev path):
+
+```bash
 pgrep -f "uvicorn main:app" | xargs -r kill -9
 ```
 
-uvicorn without `--reload` does NOT pick up code changes, so if you
-edited Python files and re-ran tests pass but the live behaviour
-hasn't changed, restart uvicorn.
+To pick a different host port without freeing 8000, set
+`IA_PORT=8001` in `.env` and re-up.
 
 ## "Report not available" stuck in the UI panel
 
@@ -91,8 +97,10 @@ design — `reportFetchedForThread` short-circuits repeated attempts.
 
 If you see this with a working server-side write (the log shows
 `publish wrote report`), the JS retry budget was just too short for
-your LLM. Open `templates/index.html`, find the `delays` array in
-`fetchAndRenderReport`, and bump the totals — or open
+your LLM. The React UI's retry schedule lives in
+`web/src/lib/useReview.ts::RETRY_DELAYS_MS` (mirror copy in
+`useCriticalFindings.ts`); bump the values and `cd web && npm run
+build` then `docker compose up -d --build web`. As a fallback, open
 DevTools → Network and manually `GET /reports/<tid>.md` to see the
 content.
 
@@ -103,7 +111,7 @@ Scope filtering. If `scope` excludes a reviewer's role
 those reviewers' `run` method exits immediately via `_skip_for_scope`
 and returns `{}`. `_classify_progress` maps an empty update to `empty`,
 and the UI greys those circles. **This is correct behaviour**, not a
-bug. If you expected all three to run, set `scope=[]` (or omit the
+bug. If you expected all four to run, set `scope=[]` (or omit the
 field).
 
 ## Validator rejected my PR / repo
@@ -170,20 +178,28 @@ sensitive to cwd.
    `Langfuse tracing disabled (LANGFUSE_* keys not set)`. If you see
    the disabled message, the keys aren't being read — verify `.env` is
    in the cwd of uvicorn.
-3. For self-hosted: wait ~30s after `docker compose --profile
-   observability up` — Langfuse's first-boot seeding takes a moment.
-   Then check `http://localhost:3000/api/public/health`.
+3. For self-hosted: wait ~30s after `docker compose up` — Langfuse's
+   first-boot seeding takes a moment. Then check
+   `http://localhost:3000/api/public/health`.
 4. For Langfuse Cloud: verify the keys are for the right project, and
    that you can `curl -H "Authorization: Basic $(echo -n
    <pk>:<sk> | base64)" https://cloud.langfuse.com/api/public/health`.
 
 ## I can't reproduce a bug the user is seeing
 
-The single most common cause is a stale uvicorn process. Without
-`--reload`, uvicorn does NOT pick up code changes. Confirm with
-`pgrep -fl uvicorn`, kill it, restart.
+Most common cause: stale Docker image. The `app` and `web` containers
+bake their code at build time, so edits to Python or to `web/src/`
+do NOT show up until you rebuild:
 
-Second-most-common cause: editing `templates/index.html` doesn't
-require a restart (Jinja2Templates re-reads on each request), but the
-browser caches aggressively. Hard-refresh (Cmd-Shift-R) or use
-DevTools → Disable cache while open.
+```bash
+docker compose up -d --build app web    # rebuild + recreate both
+docker compose logs -f app web          # tail logs to confirm fresh boot
+```
+
+Second-most-common cause: aggressive browser cache on the SPA bundle.
+nginx serves immutable `dist/assets/index-<hash>.js` so a hard refresh
+(Cmd-Shift-R) or DevTools → Disable cache while open is enough.
+
+Third: if you're running `uvicorn main:app` directly (legacy dev path
+without Docker), the process holds a snapshot of imports — kill +
+restart on every Python edit.

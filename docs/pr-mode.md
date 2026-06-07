@@ -23,7 +23,7 @@ ReviewRequest(mode="pr", diff=<unified>, files_changed=[...], author=...)
 validate_request   (pure-code prefilter + LLM judge)
             │
             ▼
-[ dependency · injection · owasp ]   (parallel, each gets the full diff)
+[ dependency · injection · owasp · configuration ]   (parallel, each gets the full diff)
             │
             ▼
 review_decision → aggregate_results → format_report → publish_report

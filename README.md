@@ -37,23 +37,29 @@ but ia-reviewer is scoped to **GitHub only**, **without Slack**, and
 > `src/agents/exploit_proposal.py::EXPLOIT_DISCLAIMER` for the canonical
 > wording.
 
-## Quick start (local, public repos)
+## Quick start (Docker)
 
 ```bash
 git clone https://github.com/<your-org>/ia-reviewer.git
 cd ia-reviewer
 
-python3.11 -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
-
 cp .env.example .env
 # minimum viable .env: USE_AI_GATEWAY=true, AI_GATEWAY_URL=<your OpenAI-compatible endpoint>
 # leave GITHUB_TOKEN empty for anonymous clone of public repos
 
-.venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000
-# open http://127.0.0.1:8000/
+docker compose up -d --build
+# open http://localhost:8000/  — review UI (React SPA served by nginx)
+# open http://localhost:3000/  — Langfuse traces (dev@local.dev / localdev123!)
 ```
+
+`docker compose up` brings up the full stack: backend (FastAPI), web
+(nginx + Vite-built React SPA), Postgres (pgvector), and the Langfuse
+trace stack (web + worker + ClickHouse + Redis + MinIO). The backend
+container is `expose:`-only inside the compose network; nginx is the
+sole host-facing surface on `${IA_PORT:-8000}`.
+
+For a constrained host, skip the Langfuse stack:
+`docker compose up -d app web postgres`.
 
 Paste any GitHub URL into the form:
 
@@ -75,27 +81,33 @@ curl -s -X POST http://localhost:8000/review \
 curl -s http://localhost:8000/reports/<thread_id>.md   # final report
 ```
 
-## Three reviewers
+## Four reviewers
 
 - **Dependency** — manifest / lockfile vulnerabilities, typosquats,
-  unmaintained packages.
+  unmaintained packages. Script-first via OSV.dev in repo mode; one
+  LLM call only for the narrative summary.
 - **Injection** — SQLi, command, template, deserialization, path
-  traversal, XSS.
-- **OWASP Top 10** — broader sweep covering A01 / A02 / A04 / A05 /
-  A07 / A08 / A09 / A10. A03 and A06 are delegated to Injection and
-  Dependency, respectively.
+  traversal, XSS. Source code only.
+- **OWASP Top 10** — application-level OWASP (A01 / A02 / A04 /
+  A07-logic / A08 / A09 / A10). Source code only.
+- **Configuration** — misconfigurations, default credentials, exposed
+  secrets, container/IaC hardening, reverse-proxy headers. Scans
+  `Dockerfile`, `docker-compose*.yml`, `.env*`, `*.tf`, `nginx.conf`,
+  plus generic INI / TOML / YAML / properties. A03 → Injection;
+  A06 → Dependency; A05 misconfig + A07 default-credentials + secret
+  exposure → Configuration.
 
 Scope a subset with `scope=["dependency", "injection"]` on the request
-body. Empty (default) runs all three.
+body. Empty (default) runs all four.
 
 ## Architecture in a sentence
 
-LangGraph state machine with a parallel fan-out across the three
+LangGraph state machine with a parallel fan-out across the four
 reviewers, a Phase B human-in-the-loop re-review decision node bounded
-by `MAX_CYCLES=3`, and a Phase C exploit-proposal branch with
-per-finding human approval bounded by `MAX_EXPLOIT_PROPOSALS=3`. Both
-human-loop branches degrade gracefully when no checkpointer is wired
-(auto-skip interrupts). See [`docs/architecture.md`](docs/architecture.md)
+by `MAX_CYCLES=3`, and on-demand exploit-proposal generation via
+`POST /reviews/{tid}/exploits/{fid}` bounded by `MAX_EXPLOIT_PROPOSALS=3`.
+Both human-loop branches degrade gracefully when no checkpointer is
+wired (auto-skip interrupts). See [`docs/architecture.md`](docs/architecture.md)
 for the full picture.
 
 ## RAG — retrieval over past findings
@@ -121,14 +133,25 @@ no `EMBEDDING_MODEL`, no `DATABASE_URL`, gateway without an
 
 ## Web UI
 
-A small static page at `GET /` shows:
+The production UI is a React SPA at `web/` (Vite + TypeScript + shadcn/ui
++ Tailwind), served by a dedicated nginx container in compose. It shows:
 
-- Live workflow diagram, circles light up as the graph progresses.
-- Chat panel tied to the LangGraph `thread_id` — ready for human-loop
-  questions.
+- Live workflow diagram (PR-mode-aware — `clone_repo` is greyed out
+  for PR reviews), circles light up as the graph progresses.
+- Per-file scan panel (repo mode) with per-role progress bars.
+- Critical findings panel with on-demand exploit PoC creation
+  (bounded scroll, ~2-3 rows visible).
+- Token usage panel (grand total leading, per-node breakdown
+  collapsible).
 - Final report rendered as Markdown.
+- Past reviews + Active reviews lists in the sidebar.
+- Header pills: theme toggle + Langfuse "View traces ↗" link.
 
-See [`docs/ui.md`](docs/ui.md) for the workflow colour codes.
+The legacy Jinja template at `templates/index.html` is retained as
+a debug fallback for direct `uvicorn` runs (developer-only); it is
+NOT reachable through the compose stack — nginx terminates `/` and
+serves the React bundle. See [`docs/ui.md`](docs/ui.md) for the
+workflow colour codes and React component layout.
 
 ## Docker
 
@@ -191,9 +214,20 @@ Langfuse on a constrained host, scope the up command:
 
 ## Tests
 
+Backend pytest + ruff and frontend Vitest are dev-tools — they
+run on the contributor's machine against the local checkout, not
+inside the Docker image. See [`docs/development.md`](docs/development.md)
+for setup; the short version:
+
 ```bash
-.venv/bin/pytest        # full suite (~5s on M-series Mac)
-.venv/bin/pytest tests/unit -q   # fast feedback loop
+# Backend
+.venv/bin/pytest                  # full suite (~7s on M-series Mac)
+.venv/bin/pytest tests/unit -q    # fast feedback loop
+.venv/bin/ruff check src/ tests/
+
+# Frontend (web/)
+cd web && npm test                # full vitest suite (~3s)
+cd web && npm run lint && npm run typecheck && npm run build
 ```
 
 The project follows strict TDD; see

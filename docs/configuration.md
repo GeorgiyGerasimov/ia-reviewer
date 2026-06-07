@@ -148,8 +148,11 @@ every `graph.astream` / `graph.ainvoke` invocation. The `thread_id`
 doubles as the Langfuse `session_id` so chat-driven resumes group with
 the initial review.
 
-Self-hosted stack via `docker compose --profile observability up` —
-see [observability.md](observability.md).
+Self-hosted Langfuse stack is **default-on** in `docker-compose.yml` —
+`docker compose up -d` brings up `langfuse-web` + `langfuse-worker`
+alongside `app` + `web` + `postgres`. See
+[observability.md](observability.md) for the trace UI URL and
+seeded dev keys.
 
 ## App
 
