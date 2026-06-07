@@ -1,5 +1,6 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
 
 // Vite builds the SPA into `dist/`. FastAPI mounts that directory at
 // / when it exists; otherwise it falls back to the legacy
@@ -13,7 +14,7 @@ import react from "@vitejs/plugin-react";
 // package.json forces both projects to resolve to the same vite
 // version so types align.
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), tailwindcss()],
   build: {
     outDir: "dist",
     emptyOutDir: true,

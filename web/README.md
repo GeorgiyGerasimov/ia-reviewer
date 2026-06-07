@@ -25,10 +25,13 @@ The deliberate boundary is that nothing in `web/` imports anything from
 - **React 18** — UI library
 - **TypeScript** — strict mode, no `any`
 - **Vite** — dev server + bundler
+- **Tailwind CSS v4** — utility-first styling (CSS-first config via `@theme`)
 - **Vitest** — Jest-compatible test runner with native ESM
 - **React Testing Library** — DOM-first component tests
 - **ESLint** (flat config) + **Prettier** — lint + format
 - **jsdom** — DOM environment for component tests
+
+shadcn/ui (Radix primitives, copy-into-repo components) will land in the next PR.
 
 ## Layout
 
@@ -50,7 +53,7 @@ web/
     ├── api/                  # typed fetch wrappers (HTTP + WS)
     ├── components/           # one .tsx + colocated .test.tsx per UI piece
     ├── lib/                  # pure logic (formatters, markdown, …)
-    ├── styles/               # CSS tokens + app baseline
+    ├── styles/globals.css    # @tailwind imports + design tokens via @theme
     └── test/setup.ts         # @testing-library/jest-dom registration
 ```
 
@@ -62,9 +65,14 @@ web/
 - Pure logic goes in `lib/`. No DOM, no React, no fetch.
 - API calls go through `api/client.ts`. Components never call `fetch`
   directly — they receive data via props from a hook or container.
-- Styles live next to their component as plain CSS or CSS Modules.
-  Design tokens (colors / radii / shadows) live in `styles/tokens.css`
-  and are the single source of truth.
+- Styles use **Tailwind utility classes** on the JSX. The runtime
+  palette and design tokens live in `styles/globals.css` as CSS
+  variables (`--text`, `--muted`, `--accent`, …) and are bridged to
+  Tailwind utilities (`text-text`, `text-muted`, `bg-accent`, …) via
+  the `@theme inline` block. Dark mode flips through
+  `[data-theme="dark"]` on `<html>` — the boot script in `index.html`
+  sets it before stylesheet parsing. `dark:` Tailwind variants work
+  via the `@custom-variant dark` declaration in `globals.css`.
 
 ## Workflow
 
@@ -135,9 +143,12 @@ panels are migrating from `templates/index.html` piece by piece:
 
 | Panel             | Status | Notes                                          |
 | ----------------- | ------ | ---------------------------------------------- |
+| Tailwind v4 setup | ✅     | `@theme inline` bridges our CSS vars to utilities |
 | `format.ts`       | ✅     | Pure helpers extracted with tests              |
 | `markdown.ts`     | ✅     | Tiny renderer with tests                       |
-| `TokenSummary`    | ✅     | Reference component — establishes the pattern  |
+| `TokenSummary`    | ✅     | Reference component (Tailwind utilities)       |
+| shadcn/ui init    | TODO   | components.json + lib/utils.ts (cn helper)     |
+| shadcn batch 1    | TODO   | Button, Card, Dialog, Drawer, Sheet, Tabs, …   |
 | API client        | TODO   | Typed `fetch` wrappers, hook layer             |
 | WorkflowDiagram   | TODO   | Left-rail step indicators                      |
 | ActiveReviews     | TODO   | Sidebar list with live token counter           |
@@ -147,6 +158,9 @@ panels are migrating from `templates/index.html` piece by piece:
 | TokenUsagePanel   | TODO   | Per-node LLM accounting in the report view     |
 | ReportPanel       | TODO   | Markdown report viewer + WebSocket stream      |
 | Theme toggle      | TODO   | Dark mode (palette + localStorage persistence) |
+| PWA (manifest + SW) | TODO | vite-plugin-pwa with Workbox                   |
+| Web Push          | TODO   | VAPID; notify on critical findings             |
+| Mobile layout     | TODO   | Drawer sidebar, stacked findings on narrow     |
 
 The legacy template stays as the live UI until this table is fully
 green. New features may land on the React side first and the legacy
