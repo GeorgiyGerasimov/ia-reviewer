@@ -157,6 +157,56 @@ describe("<WorkflowDiagram />", () => {
     );
   });
 
+  it("paints clone_repo as empty (grey) from the start in PR mode", () => {
+    // Background: clone_repo only fires for repo-mode reviews —
+    // `_run_repo_review` emits the active/fired envelope, PR mode
+    // goes straight to validate_request. We KEEP the row visible
+    // (full topology stays legible) but pre-paint it `empty` so
+    // it reads as "not applicable" instead of "failed step that
+    // never ran". Same convention as notify_rejection on the
+    // accept branch (visible but dimmed via data-branch=skipped).
+    render(
+      <WorkflowDiagram
+        nodeStatuses={{ validate_request: "fired" }}
+        validationAccepted={true}
+        mode="pr"
+      />,
+    );
+    const dl = screen.getByTestId("wf-step-clone_repo");
+    expect(dl).toBeInTheDocument();
+    expect(dl).toHaveAttribute("data-status", "empty");
+    // The label is still legible (the topology row stays in place).
+    expect(screen.getByText("Download")).toBeInTheDocument();
+  });
+
+  it("does not override clone_repo in PR mode if the backend somehow emits it", () => {
+    // Defensive: if the backend ever decides to emit clone_repo
+    // for a PR review (e.g. shallow clone for diff resolution),
+    // the real envelope wins — we don't force `empty` over a real
+    // terminal status.
+    render(
+      <WorkflowDiagram
+        nodeStatuses={{ clone_repo: "fired" }}
+        validationAccepted={null}
+        mode="pr"
+      />,
+    );
+    expect(screen.getByTestId("wf-step-clone_repo")).toHaveAttribute(
+      "data-status",
+      "fired",
+    );
+  });
+
+  it("leaves clone_repo pending in repo mode (default)", () => {
+    // Repo mode preserves the existing "pending until envelope"
+    // behavior — operators see the dot fill in live.
+    render(<WorkflowDiagram nodeStatuses={{}} validationAccepted={null} />);
+    expect(screen.getByTestId("wf-step-clone_repo")).toHaveAttribute(
+      "data-status",
+      "pending",
+    );
+  });
+
   it("paints all non-terminal nodes as empty (skipped) when the run terminated", () => {
     // After Stop is clicked the WS emits __cancelled__; useReviewStream
     // sets isDone+isCancelled. App passes `terminal=true` to the diagram

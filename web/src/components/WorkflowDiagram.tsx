@@ -28,6 +28,10 @@ export interface WorkflowDiagramProps {
    *  coerced to `empty` so the sidebar shows the final shape (no
    *  pulsing dots after the WS terminates). */
   terminal?: boolean;
+  /** Review mode. PR-mode hides `clone_repo` (the graph starts at
+   *  validate_request — there's no clone). Defaults to "repo" so
+   *  existing call sites keep their behavior. */
+  mode?: "pr" | "repo";
 }
 
 // Steps + their display labels. Order matches the runtime flow.
@@ -127,16 +131,18 @@ const SECURITY_CHILDREN = [
 // upstream cascade set — typically "active" once validate_request
 // accepted (set by useReviewStream), so the parent dot pulses
 // while the children are in flight.
+function isTerminal(s: NodeStatus | undefined): boolean {
+  return s === "fired" || s === "empty" || s === "rejected";
+}
+
 function deriveDerivedStatuses(
   raw: Record<string, NodeStatus>,
 ): Record<string, NodeStatus> {
-  const terminal = (s: NodeStatus | undefined): boolean =>
-    s === "fired" || s === "empty" || s === "rejected";
-  const allDone = SECURITY_CHILDREN.every((n) => terminal(raw[n]));
+  const allDone = SECURITY_CHILDREN.every((n) => isTerminal(raw[n]));
   if (!allDone) return raw;
   // Don't override a backend-emitted value if the parent ever
   // gets one in the future — only fill in when absent.
-  if (raw.security_reviewers && terminal(raw.security_reviewers)) return raw;
+  if (raw.security_reviewers && isTerminal(raw.security_reviewers)) return raw;
   return { ...raw, security_reviewers: "fired" };
 }
 
@@ -160,9 +166,19 @@ export function WorkflowDiagram({
   nodeStatuses,
   validationAccepted,
   terminal = false,
+  mode = "repo",
 }: WorkflowDiagramProps) {
   const derived = deriveDerivedStatuses(nodeStatuses);
-  const effectiveStatuses = terminal ? coerceTerminal(derived) : derived;
+  // PR-mode skips clone_repo — the graph starts at validate_request.
+  // Mark it empty (skipped, grey) from the start instead of hiding
+  // the row, so operators see the FULL graph topology and just know
+  // "this step doesn't apply in PR mode". Same convention as
+  // notify_rejection on the accept branch (visible but dimmed).
+  const withMode =
+    mode === "pr" && !isTerminal(derived.clone_repo)
+      ? { ...derived, clone_repo: "empty" as NodeStatus }
+      : derived;
+  const effectiveStatuses = terminal ? coerceTerminal(withMode) : withMode;
   return (
     <div className="rounded-xl border border-border bg-background p-4">
       <h3 className="mb-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
