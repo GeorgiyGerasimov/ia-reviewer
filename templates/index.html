@@ -913,6 +913,28 @@
             color: var(--accent);
             font-size: 0.8rem;
             font-style: italic;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+            white-space: nowrap;
+        }
+        /* Spinner shown next to "Generating PoC…" while the POST is
+           in-flight. The endpoint runs two LLM calls (draft + artifact)
+           which can take 10-30 seconds on a slow gateway; without a
+           motion cue the operator can't tell whether the request is
+           progressing or hung. */
+        .cf-spinner {
+            display: inline-block;
+            width: 0.9rem;
+            height: 0.9rem;
+            border: 2px solid var(--border);
+            border-top-color: var(--accent);
+            border-radius: 50%;
+            animation: cf-spin 0.8s linear infinite;
+            flex: 0 0 auto;
+        }
+        @keyframes cf-spin {
+            to { transform: rotate(360deg); }
         }
         .cf-row-meta {
             font-size: 0.75rem;
@@ -1362,7 +1384,7 @@
             // Inline "Generating…" state — replace the button with a
             // visible status string instead of mutating the button text
             // (the button is async-detached anyway when the row re-renders).
-            actionCell.innerHTML = '<span class="cf-row-generating">Generating PoC…</span>';
+            actionCell.innerHTML = '<span class="cf-row-generating"><span class="cf-spinner" aria-hidden="true"></span>Generating PoC…</span>';
             try {
                 const r = await fetch(`/reviews/${tid}/exploits/${fid}`, {method: "POST"});
                 if (r.status === 409) {
