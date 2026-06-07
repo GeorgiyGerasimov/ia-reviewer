@@ -197,7 +197,7 @@ Every node in `build_review_graph` is wrapped with [`timed_node(...)`](src/utils
 
 Field order is stable — downstream parsers (`grep node_complete | awk -F'duration_ms='`, jq pipelines, plotting scripts) depend on it. Wrapper measures `time.perf_counter()` (monotonic), never mutates `state`, re-raises on exception after logging.
 
-Coverage: all 10 nodes (`validate_request`, `retrieve_past_context`, `notify_rejection`, four `*_review`, `review_decision`, `aggregate_results`, `format_report`, `publish_report`). `tests/integration/test_graph_timing_logged.py` catches any future `add_node` call that forgets the wrapper.
+Coverage: all 11 nodes (`validate_request`, `retrieve_past_context`, `notify_rejection`, four `*_review` — dependency / injection / owasp / configuration, `review_decision`, `aggregate_results`, `format_report`, `publish_report`). `tests/integration/test_graph_timing_logged.py` catches any future `add_node` call that forgets the wrapper.
 
 Cost + latency expectations per mode, plus the awk/grep recipes for p50/p95 extraction, live in [`docs/performance-and-cost.md`](docs/performance-and-cost.md). These are companion data to Langfuse: Langfuse covers LLM-call-level details (tokens, prompts), the structured log covers graph-orchestration-level details (which nodes ran, in what order, how long each took).
 

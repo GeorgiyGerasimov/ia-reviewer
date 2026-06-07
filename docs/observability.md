@@ -8,12 +8,16 @@ in a single Langfuse trace.
 
 ## Quick start — local self-hosted stack
 
+The Langfuse stack is **default-on** in `docker-compose.yml` — every
+`docker compose up -d` starts the trace UI alongside the app:
+
 ```bash
-docker compose --profile observability up -d
-open http://localhost:3000           # dev@local / localdev123!
+docker compose up -d
+open http://localhost:3000           # dev@local.dev / localdev123!
 ```
 
-This brings up 5 extra containers alongside `postgres` + `app`:
+This brings up 5 trace-related containers alongside `app` + `web` +
+`postgres`:
 
 - `langfuse-web` — UI on port 3000.
 - `langfuse-worker` — background ingestion.
@@ -39,7 +43,7 @@ defaults for any deployment that's reachable beyond localhost.
 
 ## Cloud (alternative)
 
-Skip the profile. In `.env`:
+Set the cloud URL + paste real keys into `.env`:
 
 ```
 LANGFUSE_HOST=https://cloud.langfuse.com
@@ -47,8 +51,15 @@ LANGFUSE_PUBLIC_KEY=pk-lf-<your-real-key>
 LANGFUSE_SECRET_KEY=sk-lf-<your-real-key>
 ```
 
-`docker compose up` then only starts `postgres` + `app` and traces ship
-to cloud.langfuse.com.
+The local Langfuse stack still builds, but you can skip it to save
+RAM with a scoped `up`:
+
+```bash
+docker compose up -d app web postgres
+```
+
+The app traces ship to `cloud.langfuse.com`; the local
+`langfuse-web` container is unused.
 
 ## Off
 

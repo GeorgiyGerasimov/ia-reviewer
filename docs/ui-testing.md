@@ -1,18 +1,39 @@
 # UI testing — three tiers
 
-The UI (`templates/index.html`) carries non-trivial logic: a workflow
-chart wired to WebSocket envelopes, an active-reviews poll with a
-Stop button, a tiny Markdown→HTML renderer, theme persistence, and
-five places where reviewer-node names must stay in sync with
-`_SECURITY_NODES` in `src/graph/coordinator.py`.
-
-Three tiers of testing cover it, from cheapest to most expensive.
+The production UI is a React 18 + TypeScript SPA in `web/` (Vitest
+suite covers it). The legacy Jinja template at `templates/index.html`
+is retained as a debug fallback and has Tier 1 static guards. Three
+tiers of testing cover the surface, from cheapest to most expensive.
 Each tier catches a different class of bug.
 
-## Tier 1 — Static checks (pure Python, no browser)
+## Tier 0 — Vitest (React component / hook unit tests)
+
+**Where:** `web/src/**/*.test.{ts,tsx}` and `web/src/**/*.test.ts`.
+
+**Cost:** ~3s for the full suite (~200 tests across ~22 files) via
+`cd web && npm test`. Run on every contributor checkout; gated in CI.
+
+**What it catches:**
+- Reducer logic in `useReviewStream` (cascade-active, branch dimming,
+  terminal coercion).
+- HTTP hooks with retry-on-404 backoff (`useReview`,
+  `useCriticalFindings`) — exhaust + race scenarios.
+- WorkflowDiagram step set + status priority + PR-mode greyout.
+- FileProgressPanel role ordering + skipped-categories summary.
+- Markdown renderer XSS-safety + GFM table support.
+- API client `APIError` shape + JSON parsing fallbacks.
+
+This is the **primary** UI test surface — most regressions get
+caught here before they reach the browser.
+
+## Tier 1 — Static checks (legacy Jinja template only)
 
 **Where:** `tests/integration/test_ui_template_static_checks.py` and
 `tests/integration/test_ui_template_reviewers_sync.py`.
+
+These tests guard the legacy `templates/index.html` fallback. The
+React SPA is not exercised here — its equivalent guards live in
+Tier 0 Vitest.
 
 **What it catches:**
 - Every `var(--xxx)` has a matching `--xxx:` declaration (caught
@@ -32,21 +53,7 @@ Each tier catches a different class of bug.
 no node runtime (node is only used for `--check` and the test
 auto-skips when it's missing on PATH).
 
-## Tier 2 — JS unit tests (not implemented)
-
-JSDOM + vitest would let us assert on `renderActiveReviews([...])`
-directly, mock `fetch` per-call, etc. We deliberately skipped this
-tier:
-
-- Most of the JS logic lives inline in `templates/index.html`, so
-  testing it requires extracting to `static/js/app.js` first — a
-  middle-sized refactor.
-- Tier 3 (Playwright) covers the same surface with a real browser,
-  at a higher per-test cost but lower per-test setup cost.
-
-If the JS grows beyond ~500 lines, extract + add this tier.
-
-## Tier 3 — Playwright e2e (headless Chromium against the real app)
+## Tier 2 — Playwright e2e (headless Chromium against the real app)
 
 **Where:** `tests/e2e/playwright/`.
 
@@ -135,7 +142,8 @@ Good fits:
   would have caught it in CI.
 
 Bad fits:
-- Pure JS logic without DOM side effects → unit-test it (Tier 2)
+- Pure JS / TS logic without DOM side effects → unit-test it
+  in Vitest (Tier 0)
   when we have it, or via in-template assertion (`document.querySelector`
   in dev console) for one-offs.
 - Edge cases in the graph itself → `tests/e2e/` non-Playwright tests

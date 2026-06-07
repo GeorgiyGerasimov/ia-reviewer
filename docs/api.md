@@ -4,8 +4,13 @@ Base URL in the examples: `http://localhost:8000`.
 
 ## `GET /` — UI
 
-HTML form + chat + workflow diagram + final report panel. See
-[ui.md](ui.md) for the frontend behavior.
+The production UI is a **React SPA** built from `web/` and served by
+the dedicated nginx container in `docker-compose.yml`. nginx terminates
+`/` and reverse-proxies `/health`, `/review`, `/reviews/*`, `/reports/*`,
+`/chat/*`, `/img.png`, and `/ws/*` to the `app` service. The legacy
+Jinja template at `templates/index.html` is retained as a debug
+fallback for direct `uvicorn` runs; it is not reachable through the
+compose stack. See [ui.md](ui.md) for the frontend behaviour.
 
 ## `GET /health` — liveness
 
@@ -44,8 +49,8 @@ curl -s -X POST http://localhost:8000/review \
 
 ### `scope` parameter (both modes)
 
-Pass a subset of `["dependency", "injection", "owasp"]` to skip
-reviewers. Empty list (default) runs all three.
+Pass a subset of `["dependency", "injection", "owasp", "configuration"]`
+to skip reviewers. Empty list (default) runs all four.
 
 ```bash
 curl -s -X POST http://localhost:8000/review \

@@ -157,21 +157,31 @@ A new reviewer is:
    reaches it.
 4. Add a render label in
    [`src/agents/report_renderer.py::_ROLE_LABELS`](../src/agents/report_renderer.py).
-5. Update the **UI**: extend the `Security reviewers` branch in
-   `templates/index.html` with a new `<div data-node="{role}_review">`
-   AND add the role to the five JS constants
-   (`SECURITY_NODES` / `NEXT_AFTER` / `ACCEPT_PATH_NODES` /
-   `ROLE_LABELS` / `ROLE_ORDER`) plus the `handleValidationResult`
-   cascade. The smoke test
-   [`tests/integration/test_ui_template_reviewers_sync.py`](../tests/integration/test_ui_template_reviewers_sync.py)
-   enforces all five spots — it'll fail loudly if you forget one.
+5. Update the **React UI** (`web/`):
+   - `web/src/components/WorkflowDiagram.tsx` — add a `STEPS` entry
+     with `level: "child"` and `branch: "accept"`; extend the
+     `SECURITY_CHILDREN` tuple so the synthetic
+     `security_reviewers` parent waits for the new role to terminate.
+   - `web/src/lib/useReviewStream.ts` — add `{role}_review` to the
+     `CASCADE_ACTIVE` source map and to `ACCEPT_FANOUT` so the
+     pulsing-active animation cascades through it.
+   - `web/src/components/FileProgressPanel.tsx` — extend
+     `ROLE_ORDER` + `ROLE_LABELS` so the per-file scan block
+     renders for the new role in repo mode.
+   - The legacy Jinja template at `templates/index.html` is a
+     debug-only fallback — extending it is optional, no production
+     surface depends on it.
 6. Update [`docs/repo-mode.md`](repo-mode.md) with the new whitelist
    and any boundary changes to existing reviewers.
-5. Add fixtures + tests:
+7. Add fixtures + tests:
    - Unit test for the path filter (`tests/unit/test_reviewer_path_filters.py`).
    - Integration test for the agent's `_run_pr` (PR-mode) and `_run_repo`
      (repo-mode) behaviour.
-   - Update e2e tests to include the new role in fan-out assertions.
+   - Vitest tests for the React additions (extending the existing
+     `WorkflowDiagram.test.tsx` / `FileProgressPanel.test.tsx` /
+     `useReviewStream.test.tsx` fixtures with the new role).
+   - Update backend e2e tests to include the new role in fan-out
+     assertions.
 
 ## Schema changes
 
