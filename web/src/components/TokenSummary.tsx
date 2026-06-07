@@ -3,11 +3,11 @@
 // timer in the Active reviews sidebar. Pure-display: parent passes
 // the payload, this component owns no state and makes no requests.
 //
-// Tailwind v4 utility classes drive the styling — the runtime CSS
-// variables (`--text`, `--muted`) feed the `text-text` / `text-muted`
-// utilities via the `@theme inline` block in src/styles/globals.css,
-// so dark-mode flips reactively when the boot script swaps
-// `[data-theme=dark]` on <html>.
+// Tailwind utility classes drive the styling. Token names come from
+// the shadcn vocabulary defined in src/styles/globals.css — using
+// `text-muted-foreground` (subdued text) + `text-foreground` (primary
+// ink) means new shadcn components dropped in next to this one
+// inherit the same palette automatically, without bespoke overrides.
 
 import { fmtTokens } from "../lib/format";
 
@@ -25,7 +25,7 @@ export interface TokenSummaryProps {
 // Shared with both render branches so the wrapper looks identical
 // regardless of zero / non-zero state.
 const WRAPPER_CLASSES =
-  "font-mono text-[11px] text-muted tabular-nums whitespace-nowrap";
+  "font-mono text-[11px] text-muted-foreground tabular-nums whitespace-nowrap";
 
 export function TokenSummary({ input, output, calls, className }: TokenSummaryProps) {
   const wrapperClass = className ? `${WRAPPER_CLASSES} ${className}` : WRAPPER_CLASSES;
@@ -40,10 +40,10 @@ export function TokenSummary({ input, output, calls, className }: TokenSummaryPr
   return (
     <div className={wrapperClass} aria-label="Token usage so far">
       <span>
-        <strong className="font-semibold text-text">{fmtTokens(input)}</strong> in
-        <span className="text-muted"> · </span>
-        <strong className="font-semibold text-text">{fmtTokens(output)}</strong> out
-        <span className="text-muted"> · </span>
+        <strong className="font-semibold text-foreground">{fmtTokens(input)}</strong> in
+        <span className="text-muted-foreground"> · </span>
+        <strong className="font-semibold text-foreground">{fmtTokens(output)}</strong> out
+        <span className="text-muted-foreground"> · </span>
         {calls} {calls === 1 ? "call" : "calls"}
       </span>
     </div>
