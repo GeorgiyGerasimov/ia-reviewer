@@ -88,6 +88,23 @@ _TEST_DIRS = frozenset({"tests", "test", "__tests__", "spec", "e2e"})
 _DOCS_EXTENSIONS = frozenset({".md", ".rst", ".adoc", ".txt"})
 _DOCS_DIRS = frozenset({"docs", "doc", "documentation", "wiki"})
 
+# Convention-template files: shipped alongside production config as
+# documentation/templates for operators to copy + fill in. By
+# convention they contain placeholder values, NOT real secrets.
+#
+# Two shapes:
+#   - trailing suffix: `.env.example`, `terraform.tfvars.example`,
+#     `app.template`, `nginx.conf.dist`
+#   - middle segment:  `docker-compose.example.yml`, `app.example.json`
+#
+# Classifying these as DOCS prevents the Configuration reviewer from
+# burning LLM calls + producing noisy "exposed secret" findings on
+# placeholder strings like `DATABASE_PASSWORD=changeme`.
+_TEMPLATE_SUFFIXES = frozenset({"example", "sample", "template", "dist"})
+_TEMPLATE_MIDDLE_RE = re.compile(
+    r".*\.(example|sample|template|dist)\.[A-Za-z0-9]+$",
+)
+
 # Infra — by basename glob (case-sensitive: Dockerfile is canonical).
 _INFRA_BASENAME_PATTERNS = (
     re.compile(r"^Dockerfile(\..+)?$"),
@@ -158,10 +175,22 @@ def classify_file(path: str) -> FileCategory:
         if pat.match(name):
             return FileCategory.TEST
 
-    # 4. Docs — by directory OR by extension.
+    # 4. Docs — by directory OR by extension OR by convention-template
+    #    suffix / middle segment.
     if parts_set & _DOCS_DIRS:
         return FileCategory.DOCS
     if p.suffix.lower() in _DOCS_EXTENSIONS:
+        return FileCategory.DOCS
+    # Trailing template suffix: `.env.example`, `nginx.conf.dist`, etc.
+    # `PurePosixPath.suffix` strips the leading dot, so compare on the
+    # bare token. Case-insensitive (some projects ship `.Example`).
+    if p.suffix.lstrip(".").lower() in _TEMPLATE_SUFFIXES:
+        return FileCategory.DOCS
+    # Middle-segment template: `docker-compose.example.yml`,
+    # `app.example.json`. The actual extension after the marker is
+    # config-like (`.yml`/`.json`/...) — but the marker means "this is
+    # a sample, not the live config".
+    if _TEMPLATE_MIDDLE_RE.match(name):
         return FileCategory.DOCS
 
     # 5. Infra.

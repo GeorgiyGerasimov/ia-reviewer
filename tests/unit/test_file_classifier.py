@@ -82,6 +82,28 @@ def test_text_extensions_are_docs():
     assert classify_file("notes/design.rst") == FileCategory.DOCS
 
 
+def test_convention_template_files_are_docs():
+    """Files matching the *.example / *.sample / *.template / *.dist
+    convention are documentation shipped alongside production config —
+    they intentionally contain placeholder values and must not be
+    scanned for "exposed secrets". Caught the noisy ".env.example
+    contains placeholder password" findings in real reports.
+    """
+    # .env-style templates
+    assert classify_file(".env.example") == FileCategory.DOCS
+    assert classify_file(".env.sample") == FileCategory.DOCS
+    assert classify_file(".env.dist") == FileCategory.DOCS
+    # Nested under config / docs / wherever
+    assert classify_file("config/database.yml.example") == FileCategory.DOCS
+    assert classify_file("terraform.tfvars.example") == FileCategory.DOCS
+    # Generic template / dist variants
+    assert classify_file("settings.local.template") == FileCategory.DOCS
+    assert classify_file("nginx.conf.dist") == FileCategory.DOCS
+    # The middle-segment form `*.example.*` (e.g. docker-compose.example.yml)
+    assert classify_file("docker-compose.example.yml") == FileCategory.DOCS
+    assert classify_file("config/app.example.json") == FileCategory.DOCS
+
+
 # ── INFRA (deployment / orchestration / build config) ─────────────────
 
 
