@@ -26,7 +26,7 @@ validate_request   (pure-code prefilter + LLM judge)
 [ dependency · injection · owasp ]   (parallel, each gets the full diff)
             │
             ▼
-review_decision → aggregate_results → process_proposal → publish_report
+review_decision → aggregate_results → format_report → publish_report
             │                                                     │
             │                                              GitHub PR comment
             │                                                     │

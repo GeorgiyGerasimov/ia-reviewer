@@ -1,16 +1,18 @@
 """CoordinatorAgent — I/O-only graph nodes for the review pipeline.
 
 Owns the non-LLM nodes that the security reviewers feed into:
-  * `aggregate` — runs after the three reviewers finish; calls the
+  * `aggregate` — runs after the four reviewers finish; calls the
     pure `ReportRenderer` to produce `state.final_report`. No I/O.
   * `publish_report` — repo-mode writes `<reports_dir>/<thread_id>.md`,
     PR-mode also posts a GitHub PR comment with the report body.
-  * `finalize_exploits` — re-renders the report after the exploit
-    loop populates `state.exploit_proposals`, overwrites the on-disk
-    `.md`, and writes sibling artifact files for any `save_mode="file"`
-    approved entries.
   * `notify_rejection` — on the validator-reject branch, posts a
     category-templated rejection notice (PR comment or local file).
+
+Exploit-PoC generation lives outside the graph now (UX rework — see
+`src/agents/exploit_proposal.py` and `POST /reviews/{tid}/exploits/{fid}`
+in main.py). The `finalize_exploits` node that used to re-render the
+report after a sequential interrupt loop is gone; on-demand creation
+writes its own sibling .md directly from the endpoint.
 
 Markdown rendering itself lives in `src/agents/report_renderer.py`. This
 class deliberately stays thin so the LangGraph wiring is the only place
@@ -129,78 +131,6 @@ class CoordinatorAgent:
             logger.error("notify_rejection failed for %s: %s", state.request.pr_url, e)
             return {"error": f"notify_rejection failed: {e}", "completed": True}
         return {"pr_comment_id": comment_id, "completed": True}
-
-    async def finalize_exploits(self, state: ReviewState) -> dict:
-        """Re-render the main report with the now-populated exploit proposals
-        and write any sibling artifact files (`save_mode="file"`).
-
-        Runs after the `process_proposal` loop completes (topology:
-        publish → process_proposal → … → finalize → END, so the main
-        `.md` on disk is the pre-exploit version until this node
-        overwrites it).
-
-        Sibling files are only written for **approved** entries whose
-        `save_mode == "file"`. Declined / skipped / timeout entries
-        don't get a sibling regardless of any save_mode they were
-        initialised with.
-        """
-        if not state.request:
-            return {"completed": True}
-
-        new_body = self.renderer.render_review(
-            state.agent_reviews,
-            state.exploit_proposals,
-            request=state.request,
-            thread_id=state.thread_id,
-        )
-        # If `format_report` produced a TL;DR earlier in the run, re-splice
-        # it here. `render_review` re-renders the body from scratch, so
-        # the TL;DR section that publish_report wrote to disk is GONE
-        # from `new_body` until we put it back. `splice_tldr` is idempotent
-        # and accepts an empty `report_tldr` as a no-op, so this is safe
-        # in both formatter-on and formatter-off runs.
-        if state.report_tldr:
-            new_body = self.renderer.splice_tldr(new_body, state.report_tldr)
-
-        # Always mirror the latest body to disk, for both modes — the UI's
-        # report panel reads `/reports/<id>.md` in both modes.
-        update = self._write_repo_report(state, new_body, error_prefix="finalize_exploits")
-
-        # Sibling files for save_mode="file" approved entries.
-        if state.thread_id and (state.exploit_proposals or []):
-            for ep in state.exploit_proposals:
-                if ep.status != "approved":
-                    continue
-                if getattr(ep, "save_mode", "embed") != "file":
-                    continue
-                sibling_name = ReportRenderer.exploit_artifact_filename(
-                    state.thread_id, ep.finding_id
-                )
-                sibling_path = self.reports_dir / sibling_name
-                try:
-                    sibling_path.parent.mkdir(parents=True, exist_ok=True)
-                    sibling_path.write_text(
-                        self.renderer.render_exploit_sibling(
-                            ep, thread_id=state.thread_id
-                        ),
-                        encoding="utf-8",
-                    )
-                    logger.info(
-                        "finalize_exploits: wrote sibling file %s (%d bytes)",
-                        sibling_path,
-                        len(ep.artifact or ""),
-                    )
-                except OSError as e:
-                    logger.warning(
-                        "finalize_exploits: failed to write sibling %s: %s",
-                        sibling_path,
-                        e,
-                    )
-
-        # Keep the updated report markdown in state so DB persistence picks
-        # up the post-exploit version too.
-        update["final_report"] = new_body
-        return update
 
     async def publish(self, state: ReviewState) -> dict:
         logger.info(

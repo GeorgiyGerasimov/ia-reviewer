@@ -312,8 +312,7 @@ runaway loops, memory exhaustion.
 - `MAX_FILE_BYTES=200_000` skips binary blobs / minified bundles
   during snapshot walk.
 - `MAX_CYCLES=3` caps Phase B re-review loops.
-- `MAX_EXPLOIT_PROPOSALS=3` caps Phase C exploit-cycle iterations.
-- `EXPLOIT_TIMEOUT_SECONDS=60` default-declines a stuck human prompt.
+- `MAX_EXPLOIT_PROPOSALS=3` caps on-demand exploit generations per review.
 - `IN_MEMORY_STORE_MAX_THREADS=256` LRU cap on `ChatStore` /
   `ProgressStore`.
 - `/reviews?limit=` bounded by `MAX_REVIEWS_PAGE_SIZE=200`.

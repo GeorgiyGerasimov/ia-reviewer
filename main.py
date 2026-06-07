@@ -51,11 +51,6 @@ logger = get_logger(__name__)
 
 _TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
-# Phase C — how long to wait for the human to approve an exploit-proposal
-# interrupt before auto-declining it. Phase B review_clarification interrupts
-# do NOT use this — the human is free to take as long as they want.
-EXPLOIT_TIMEOUT_SECONDS: float = 60.0
-
 # Hard cap for the `/reviews?limit=…` query — bounds DB and memory cost
 # of pagination. Anyone sending `?limit=999999` ends up with 200 rows
 # rather than driving the server into OOM.
@@ -81,11 +76,6 @@ def _normalize_uvicorn_logging() -> None:
         target = logging.getLogger(name)
         for handler in target.handlers:
             handler.setFormatter(fmt)
-
-
-# Per-thread registry of scheduled default-decline tasks so a user reply can
-# cancel a pending timeout. Keys are thread_ids.
-_pending_timeouts: dict[str, asyncio.Task] = {}
 
 
 def _register_routes(app: FastAPI) -> None:
@@ -211,6 +201,183 @@ def _register_routes(app: FastAPI) -> None:
         if row is None:
             raise HTTPException(status_code=404, detail="review not found")
         return JSONResponse(jsonable_encoder(row), status_code=200)
+
+    @app.get("/reviews/{thread_id}/critical-findings")
+    async def list_critical_findings(
+        request: Request, thread_id: str,
+    ) -> JSONResponse:
+        """List critical findings for the UI's "Critical findings" panel.
+
+        Joins `review_findings` (severity='critical' subset) with the
+        review's existing `exploit_proposals` JSONB so each row carries
+        its current `exploit_status` (null when no exploit was attempted
+        yet) — the UI decides between rendering a "Create exploit" button
+        and a "View existing" link based on that field.
+
+        Returns 404 when the store isn't wired or the thread is unknown;
+        returns 200 with [] when the thread exists but has zero critical
+        findings.
+        """
+        store: ReviewStore | None = getattr(request.app.state, "review_store", None)
+        if store is None:
+            raise HTTPException(status_code=404, detail="review store not enabled")
+        row = await store.get_review(thread_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="review not found")
+
+        # Map finding_id → existing ExploitProposal payload (whatever
+        # status it landed at). The UI cares about the last-known state,
+        # not the full history.
+        proposals_by_id = {
+            p.get("finding_id"): p for p in (row.get("exploit_proposals") or [])
+        }
+        from src.agents.exploit_proposal import compute_finding_id
+
+        result: list[dict] = []
+        for f in row.get("findings") or []:
+            if (f.get("severity") or "").lower() != "critical":
+                continue
+            role = f.get("role") or ""
+            fid = compute_finding_id(role, f)
+            existing = proposals_by_id.get(fid)
+            result.append({
+                "finding_id": fid,
+                "role": role,
+                "severity": "critical",
+                "file": f.get("file"),
+                "line": f.get("line"),
+                "issue": f.get("issue") or "",
+                "exploit_status": existing.get("status") if existing else None,
+                "confidence": existing.get("confidence") if existing else None,
+            })
+        # Stable display order so the UI doesn't shuffle rows between renders.
+        result.sort(key=lambda r: (r["role"], r["file"] or "", r["line"] or 0))
+        return JSONResponse(jsonable_encoder(result), status_code=200)
+
+    @app.post("/reviews/{thread_id}/exploits/{finding_id}")
+    async def create_exploit(
+        request: Request, thread_id: str, finding_id: str,
+    ) -> JSONResponse:
+        """Generate an exploit PoC for one critical finding on demand.
+
+        Replaces the old in-graph `process_proposal` interrupt loop. The
+        UI's "Create exploit" button calls this endpoint; the response
+        carries the persisted ExploitProposal (approved or
+        skipped_low_confidence).
+
+        Status codes:
+          * 201 — created (or low-confidence skip persisted)
+          * 200 — already created (idempotent return of existing record)
+          * 400 — finding exists but is not critical severity
+          * 404 — review or finding_id unknown / store not wired
+          * 409 — cap (MAX_EXPLOIT_PROPOSALS=3) reached
+        """
+        from src.agents.exploit_proposal import (
+            MAX_EXPLOIT_PROPOSALS,
+            compute_finding_id,
+        )
+
+        store: ReviewStore | None = getattr(request.app.state, "review_store", None)
+        if store is None:
+            raise HTTPException(status_code=404, detail="review store not enabled")
+        row = await store.get_review(thread_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="review not found")
+
+        # Idempotency — same finding_id was already processed. Return the
+        # existing record verbatim. No LLM call, no second persist.
+        for p in row.get("exploit_proposals") or []:
+            if p.get("finding_id") == finding_id:
+                return JSONResponse(jsonable_encoder(p), status_code=200)
+
+        # Cap — count ALL proposals regardless of status (approved /
+        # declined / skipped_*) so one review can't burn unbounded
+        # LLM budget. The idempotency check above runs first so an
+        # already-created finding can still be fetched after the cap
+        # locked the rest.
+        if len(row.get("exploit_proposals") or []) >= MAX_EXPLOIT_PROPOSALS:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"exploit cap reached "
+                    f"({MAX_EXPLOIT_PROPOSALS} per review)"
+                ),
+            )
+
+        # Locate the matching finding in the review's findings list. We
+        # need the FULL finding dict (file, line, issue, severity) for
+        # the agent's prompt, so we re-derive the finding_id from each
+        # row instead of trusting an indexed lookup.
+        matching = None
+        matching_role = None
+        for f in row.get("findings") or []:
+            role = f.get("role") or ""
+            if compute_finding_id(role, f) == finding_id:
+                matching = f
+                matching_role = role
+                break
+        if matching is None:
+            raise HTTPException(status_code=404, detail="finding not found")
+        if (matching.get("severity") or "").lower() != "critical":
+            raise HTTPException(
+                status_code=400,
+                detail="finding is not critical severity",
+            )
+
+        agent = getattr(request.app.state, "exploit_agent", None)
+        if agent is None:
+            # Production lifespan wires this; tests inject via
+            # app.state.exploit_agent. A None here means a misconfigured
+            # deploy — treat as 503 so it's distinguishable from 404.
+            raise HTTPException(
+                status_code=503, detail="exploit agent not configured"
+            )
+
+        # Build the agent's input dict: original finding + role + finding_id.
+        finding_for_agent = {
+            **matching,
+            "role": matching_role,
+            "finding_id": finding_id,
+        }
+        proposal = await agent.generate_exploit(
+            finding_for_agent, save_mode="file"
+        )
+
+        # Persist + re-render. Failures here are logged but do NOT undo
+        # the LLM call — we still return the proposal so the user can
+        # save its content manually if the DB write race-conditioned.
+        proposal_dict = {
+            "finding_id": proposal.finding_id,
+            "role": proposal.role,
+            "severity": proposal.severity,
+            "status": proposal.status,
+            "proposal_text": proposal.proposal_text,
+            "artifact": proposal.artifact,
+            "confidence": proposal.confidence,
+        }
+        try:
+            await store.add_exploit_proposal(thread_id, proposal_dict)
+        except Exception as exc:
+            logger.error(
+                "failed to persist exploit_proposal for %s/%s: %s",
+                thread_id, finding_id, exc,
+            )
+
+        # Write the sibling artifact file when the agent succeeded —
+        # the UI's "View" link points at `/reports/<tid>.exploit.<fid>.md`.
+        if proposal.status == "approved" and proposal.artifact:
+            try:
+                _write_exploit_artifact(
+                    request.app.state.reports_dir,
+                    thread_id, proposal,
+                )
+            except Exception as exc:
+                logger.error(
+                    "failed to write sibling exploit file for %s/%s: %s",
+                    thread_id, finding_id, exc,
+                )
+
+        return JSONResponse(jsonable_encoder(proposal_dict), status_code=201)
 
     @app.post("/review")
     async def trigger_review(request: Request, background: BackgroundTasks) -> JSONResponse:
@@ -388,6 +555,24 @@ def _register_routes(app: FastAPI) -> None:
                     asyncio.create_task(_resume_review(app_ref, thread_id, text))
         except WebSocketDisconnect:
             await hub.disconnect(thread_id, websocket)
+
+
+def _write_exploit_artifact(reports_dir: Path, thread_id: str, proposal) -> None:
+    """Write a sibling `<thread_id>.exploit.<finding_id>.md` next to the
+    main review report. The UI's "View" link points at this file.
+
+    Defensive: skip silently when `thread_id` is empty (matches
+    CoordinatorAgent._write_repo_report's policy — no synthetic filenames)
+    so a misconfigured request can't leak `unknown.exploit.…md` files.
+    """
+    from src.agents.report_renderer import ReportRenderer
+
+    if not thread_id or not proposal.finding_id:
+        return
+    filename = ReportRenderer.exploit_artifact_filename(thread_id, proposal.finding_id)
+    body = ReportRenderer().render_exploit_sibling(proposal, thread_id=thread_id)
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    (reports_dir / filename).write_text(body, encoding="utf-8")
 
 
 def _parse_positive_int(
@@ -637,8 +822,8 @@ def _classify_progress(node_name: str, update) -> str:
 
     - `notify_rejection` always means the review was rejected → red.
     - A node that returned `{}` (or a non-dict no-op) didn't produce any
-      meaningful work this run — scope-skipped specialist, or the final
-      drain of process_proposal with no findings to handle → gray.
+      meaningful work this run — scope-skipped specialist or empty
+      formatter → gray.
     - Anything else is a real, fired-with-work step → green.
     """
     if node_name == "notify_rejection":
@@ -781,9 +966,10 @@ async def _has_pending_interrupt(app: FastAPI, thread_id: str) -> bool:
 async def _broadcast_pending_interrupts(app: FastAPI, thread_id: str) -> None:
     """Push every pending interrupt's `question` into the chat panel.
 
-    For Phase C `exploit_approval` interrupts we also schedule a default-decline
-    timer; the user has `EXPLOIT_TIMEOUT_SECONDS` to reply before the graph
-    auto-resumes with `decline <finding_id>`.
+    Today the only interrupt kind is `review_clarification` (Phase B —
+    the validator asks the human to confirm before re-running the
+    reviewers). Exploit-approval interrupts were removed when the
+    exploit feature moved to an on-demand HTTP endpoint.
     """
     config = {"configurable": {"thread_id": thread_id}}
     try:
@@ -794,83 +980,13 @@ async def _broadcast_pending_interrupts(app: FastAPI, thread_id: str) -> None:
         return
     if not snapshot.tasks:
         return
-    has_exploit_interrupt = False
-    timeout_finding_id = ""
     for task in snapshot.tasks:
         for intr in task.interrupts:
             payload = intr.value if isinstance(intr.value, dict) else {"question": str(intr.value)}
             question = payload.get("question") or str(payload)
-            # Forward a structured `interrupt` block to the UI when this is
-            # an exploit-approval prompt — the chat renders Approve/Decline
-            # buttons from these fields. Other interrupt kinds (e.g. review
-            # decision) keep going as plain text.
-            interrupt_meta: dict | None = None
-            if isinstance(payload, dict) and payload.get("kind") == "exploit_approval":
-                interrupt_meta = {
-                    "kind": "exploit_approval",
-                    "finding_id": payload.get("finding_id", ""),
-                    "role": payload.get("role", ""),
-                    "severity": payload.get("severity", ""),
-                    # Cycle counter (0-indexed `used`, total `max`) — the UI
-                    # displays "cycle <used+1> of <max>" so the human knows
-                    # how many decisions are left before the budget cap
-                    # auto-skips everything else.
-                    "cycles_used": payload.get("cycles_used", 0),
-                    "cycles_max": payload.get("cycles_max", 0),
-                }
-            msg = ChatMessage(role="agent", text=question, interrupt=interrupt_meta)
+            msg = ChatMessage(role="agent", text=question)
             app.state.chat_store.append(thread_id, msg)
             await app.state.chat_hub.broadcast(thread_id, msg.to_dict())
-            if interrupt_meta is not None:
-                has_exploit_interrupt = True
-                timeout_finding_id = interrupt_meta["finding_id"] or timeout_finding_id
-
-    if has_exploit_interrupt:
-        _schedule_exploit_timeout(app, thread_id, timeout_finding_id)
-
-
-def _schedule_exploit_timeout(app: FastAPI, thread_id: str, finding_id: str) -> None:
-    """Arm (or re-arm) the default-decline timer for `thread_id`."""
-    existing = _pending_timeouts.pop(thread_id, None)
-    if existing and not existing.done():
-        existing.cancel()
-    decline_text = f"decline {finding_id}".strip()
-    task = asyncio.create_task(_default_decline_after_timeout(app, thread_id, decline_text))
-    _pending_timeouts[thread_id] = task
-
-
-async def _default_decline_after_timeout(app: FastAPI, thread_id: str, decline_text: str) -> None:
-    try:
-        await asyncio.sleep(EXPLOIT_TIMEOUT_SECONDS)
-    except asyncio.CancelledError:
-        # Cancelled by `_cancel_pending_timeout` because the human
-        # answered in time. The cancelling caller already cleaned the
-        # dict entry; nothing else to do here.
-        return
-    try:
-        logger.info("exploit-approval timed out for %s; default-declining", thread_id)
-        msg = ChatMessage(
-            role="system",
-            text=f"No reply in {int(EXPLOIT_TIMEOUT_SECONDS)}s — declining by default.",
-        )
-        app.state.chat_store.append(thread_id, msg)
-        await app.state.chat_hub.broadcast(thread_id, msg.to_dict())
-        await _resume_review(app, thread_id, decline_text)
-    finally:
-        # Self-cleanup: without this, a thread whose user never replied
-        # keeps a completed Task in the global dict forever — slow leak
-        # at scale, plus a stale reference if a fresh review reuses the
-        # same thread_id (UUID collisions are improbable but tests
-        # routinely reuse short ids).
-        # `pop(..., None)` is idempotent if `_schedule_exploit_timeout`
-        # for the same thread overwrote our entry in the meantime.
-        _pending_timeouts.pop(thread_id, None)
-
-
-def _cancel_pending_timeout(thread_id: str) -> None:
-    task = _pending_timeouts.pop(thread_id, None)
-    if task and not task.done():
-        task.cancel()
 
 
 async def _resume_review(app: FastAPI, thread_id: str, user_text: str) -> None:
@@ -878,10 +994,7 @@ async def _resume_review(app: FastAPI, thread_id: str, user_text: str) -> None:
 
     After the resume, the graph may either complete (publish_report runs) or
     hit another interrupt — in which case we broadcast that next question too.
-    Any pending exploit-timeout for this thread is cancelled first so the
-    default-decline timer doesn't fire on top of the user's real reply.
     """
-    _cancel_pending_timeout(thread_id)
     config = _trace_config(app, thread_id, state=None, trigger="resume")
     try:
         await app.state.graph.ainvoke(Command(resume=user_text), config=config)
@@ -898,10 +1011,8 @@ async def _resume_review(app: FastAPI, thread_id: str, user_text: str) -> None:
 
 async def _persist_state_from_checkpointer(app: FastAPI, thread_id: str) -> None:
     """Reload the graph's current state from the checkpointer and upsert
-    the review row. Called after `_resume_review` so exploit decisions
-    made via chat get persisted to the DB — the local state accumulator
-    from the initial `_run_repo_review` is gone by the time the human
-    types `approve <id>`.
+    the review row. Called after `_resume_review` so any state mutated
+    during the human-in-the-loop pass gets persisted to the DB.
     """
     if getattr(app.state, "review_store", None) is None:
         return
@@ -931,13 +1042,17 @@ def create_test_app(
     reports_dir: Path | None = None,
     progress_store: ProgressStore | None = None,
     active_reviews: ActiveReviewsRegistry | None = None,
+    exploit_agent=None,
 ) -> FastAPI:
     """Build a test-mode FastAPI app with pre-injected dependencies.
 
     Tests construct mocks for `graph` (and optionally `github`) and pass
     them here. No lifespan is registered, so settings/validation/Postgres
     don't activate. `store`, `hub`, `langfuse_callback`, `reports_dir`,
-    `progress_store`, and `active_reviews` default to disabled/fresh.
+    `progress_store`, `active_reviews`, and `exploit_agent` default to
+    disabled/fresh. POST /reviews/{tid}/exploits/{fid} tests overwrite
+    `app.state.exploit_agent` directly, so the default `None` here is
+    fine — the endpoint surfaces a 503 when it's missing.
     """
     app = FastAPI(title="ia-reviewer-test")
     app.state.graph = graph
@@ -948,6 +1063,7 @@ def create_test_app(
     app.state.active_reviews = active_reviews or ActiveReviewsRegistry()
     app.state.langfuse_callback = langfuse_callback
     app.state.reports_dir = reports_dir or Path(settings.REPORTS_DIR)
+    app.state.exploit_agent = exploit_agent
     _register_routes(app)
     return app
 
@@ -1020,6 +1136,12 @@ def _build_app() -> FastAPI:
             app.state.active_reviews = ActiveReviewsRegistry()
             app.state.reports_dir = reports_dir
             app.state.langfuse_callback = get_langfuse_callback()
+            # Exploit agent powers POST /reviews/{tid}/exploits/{fid}.
+            # Constructed once at startup so the per-request handler doesn't
+            # pay model-factory init cost. No state on the instance — safe
+            # to share across concurrent requests.
+            from src.agents.exploit_proposal import ExploitProposalAgent
+            app.state.exploit_agent = ExploitProposalAgent()
             # Open the ReviewStore against the same Postgres if available.
             # The checkpointer already proves the DSN is reachable.
             app.state.review_store = None

@@ -25,28 +25,17 @@ review_decision                                          (Phase B)
   │   ├──→ [reviewers]   (rerun on human-approved clarification, cycle_count++)
   │   └──→ aggregate_results
   ▼
-aggregate_results  →  format_report  →  publish_report   (report saved BEFORE any Q&A)
-  │
-  ▼
-process_proposal                                         (Phase C — sequential loop)
-  │   ├──→ process_proposal   (more pending findings, capped at MAX_EXPLOIT_PROPOSALS=3)
-  │   └──→ finalize_report ──→ END
+aggregate_results  →  format_report  →  publish_report  →  END
 ```
 
-**Why publish before process_proposal.** The exploit-proposal branch
-asks the human approve/decline per finding via `interrupt()`. Without
-a checkpointer those interrupts auto-skip; with one they can pause
-the graph for a long time. Either way the user wants the consolidated
-report saved to disk the moment aggregate finishes — not blocked on
-"approve PoC for finding X?" Q&A. The proposals collected after publish
-live in `state.exploit_proposals` (visible in chat / via `state`) but
-intentionally **do not** make it into the on-disk markdown — that
-would require a second publish step we deliberately omit, so the
-report stays pinned to the moment aggregate produced it.
+Exploit-PoC generation is **not** in the graph. After publish, the UI
+shows critical findings in a dedicated panel; clicking "Create exploit"
+calls `POST /reviews/{tid}/exploits/{fid}` which invokes the agent
+directly — see [On-demand exploit generation](#on-demand-exploit-generation).
 
 Wiring lives in [`src/graph/coordinator.py::build_review_graph`](../src/graph/coordinator.py).
-The conditional routers are `route_after_validation`, `route_after_decision`,
-and `route_after_proposal`.
+The conditional routers are `route_after_validation` and
+`route_after_decision`.
 
 ### Why four reviewers in parallel
 
@@ -64,13 +53,6 @@ The four specialists, with their distinct surfaces:
 | **Injection** | source code (`.py` / `.js` / `.go` / ...) | One LLM call per matched file |
 | **OWASP Top 10** | source code only | One LLM call per matched file; A03→Injection, A06→Dependency, A05/A07-creds/secrets→Configuration |
 | **Configuration** | config + IaC + env (`Dockerfile`, `docker-compose*.yml`, `*.tf`, `.env*`, etc.) | One LLM call per matched file. Split out of OWASP — see [CLAUDE.md::Specialists](../CLAUDE.md). |
-
-### Why exploit proposal is sequential, not parallel
-
-Phase C asks the human one question at a time via chat. Parallel
-`Send`-style fanout would flood the chat with N concurrent "approve this
-PoC?" prompts. The conditional self-loop is the trade-off: sequential UX
-at the cost of repeated graph invocations.
 
 ## Run modes
 
@@ -148,32 +130,41 @@ reruns. On the third entry `_needs_clarification` check is skipped, the
 agent returns `{"extra_context": ""}` and routing falls through to
 `aggregate_results`.
 
-## Exploit proposal (Phase C)
+## On-demand exploit generation
 
-Per critical/major finding, sequential per-graph-invocation iteration:
+Only `critical` findings qualify (`_QUALIFYING_SEVERITIES = {"critical"}`
+in `src/agents/exploit_proposal.py`). After the report publishes, the UI
+calls `GET /reviews/{tid}/critical-findings` which returns one row per
+critical finding with a content-addressed `finding_id` (SHA256 of
+`role|file|line|issue`, first 12 chars) and its current `exploit_status`.
 
-1. **Self-confidence check** — LLM rates 0–10 how confidently it could
-   draft a reliable PoC + drafts a `proposal_text`.
-2. **Below threshold** (5/10) → status `skipped_low_confidence`, **no
-   human prompt**. Avoids bothering the operator with low-quality
-   suggestions.
-3. **Above threshold** → `interrupt()` with an `exploit_approval`
-   question. `main.py` schedules a `EXPLOIT_TIMEOUT_SECONDS=60` task that
-   auto-resumes with `decline <finding_id>` if the human stays silent.
-4. **`approve <finding_id>`** → a second LLM call generates the
-   artifact (PoC code, repro steps). Status `approved`, artifact populated.
-5. **`decline <finding_id>` or unmatched text** → status `declined`.
-6. **Timeout** → status `timeout_declined`.
+Per row, the UI shows either:
 
-`finding_id` is content-addressed (SHA256 of `role|file|line|issue`,
-first 12 chars). Same finding across two runs gets the same id, so the
-operator can `approve <id>` deterministically.
+- `[ Create exploit ]` → `POST /reviews/{tid}/exploits/{fid}` →
+  `ExploitProposalAgent.generate_exploit(finding)`:
+  1. LLM rates 0–10 how confidently it could draft a reliable PoC +
+     drafts a `proposal_text`. Below 5/10 → status
+     `skipped_low_confidence`, no artifact, persisted (consumes a cap
+     slot). Above → step 2.
+  2. Second LLM call generates the artifact (PoC code, repro steps).
+     Status `approved`, artifact populated.
+  3. Endpoint persists via `ReviewStore.add_exploit_proposal` and
+     writes the sibling file `reports/<tid>.exploit.<fid>.md`.
+- `[ View existing ]` → opens the sibling .md when an approved
+  exploit already exists for this finding.
+- Grey badge → `skipped_low_confidence` etc., no action.
 
-Bounded by `MAX_EXPLOIT_PROPOSALS=3`. Once three proposals (any status)
-exist in `state.exploit_proposals`, every remaining pending finding is
-batch-skipped in one invocation with status `skipped_cap_reached` — no
-LLM call, no human prompt. Prevents runaway LLM spend on PRs with many
-critical findings.
+**Cap.** `MAX_EXPLOIT_PROPOSALS=3` per review (any combination of
+approved / skipped). Beyond the cap the endpoint returns 409 and the UI
+disables the remaining Create buttons.
+
+**Why on-demand, not in-graph.** The earlier design (sequential
+`interrupt()` per critical finding) flooded the chat with verbose
+approve/decline prompts and left the graph paused for unbounded time
+waiting on a human. Moving the trigger to a per-row HTTP endpoint puts
+the operator in control, keeps the published report static, and
+removes any "review is hanging" UX. The endpoint works even after
+process restart (state lives in the DB, not the LangGraph checkpoint).
 
 ## Interrupts without a checkpointer
 
@@ -185,9 +176,11 @@ later. When `build_review_graph(checkpointer=None)`, both
 - `ReviewDecisionAgent` skips the interrupt and falls through to
   `aggregate_results` — the rerun path is unavailable but the graph
   doesn't stall.
-- `ExploitProposalAgent` marks every qualifying finding as
-  `skipped_no_human` without LLM calls — the graph proceeds to
-  `publish_report` and the report still saves.
+- The exploit-generation endpoint doesn't use `interrupt()` at all, so
+  it works regardless of checkpointer state — the user can still create
+  PoCs against a no-DB deployment, the proposal just isn't persisted in
+  the review row (it returns 404 since the DB is the source of truth
+  for critical findings).
 
 Production wires `AsyncPostgresSaver` via
 [`open_checkpointer(settings.DATABASE_URL)`](../src/utils/checkpointer.py)

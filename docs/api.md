@@ -179,6 +179,76 @@ sending (`confirm("Stop this review?")`), and refreshes the active
 list immediately on response so the row disappears as soon as the
 registry drops the entry.
 
+## `GET /reviews/{thread_id}/critical-findings` — critical findings + exploit status
+
+Powers the UI's "Critical findings" panel. Returns one row per
+`severity=critical` finding with a content-addressed `finding_id` and
+the current `exploit_status` (or `null` if no exploit was attempted).
+
+```bash
+curl -s http://localhost:8000/reviews/<thread_id>/critical-findings
+# [
+#   {
+#     "finding_id": "abc123def456",   # stable 12-char hash of role|file|line|issue
+#     "role": "injection",
+#     "severity": "critical",
+#     "file": "src/auth.py",
+#     "line": 42,
+#     "issue": "SQL injection via login form",
+#     "exploit_status": null,         # or "approved" / "skipped_low_confidence"
+#     "confidence": null              # set when an attempt was made
+#   }
+# ]
+```
+
+Status codes:
+- 200 — review found; rows returned (empty array when no critical findings)
+- 404 — review unknown, or `app.state.review_store` is None
+
+Sorted by `(role, file, line)` for stable UI ordering.
+
+## `POST /reviews/{thread_id}/exploits/{finding_id}` — generate exploit PoC
+
+Backs the per-row "Create exploit" button. Runs
+`ExploitProposalAgent.generate_exploit(finding)` for ONE qualifying
+critical finding — LLM draft (with confidence self-rating) followed by
+LLM artifact generation when confidence ≥ 5/10. Persists the resulting
+`ExploitProposal` to the `reviews.exploit_proposals` JSONB column and
+writes a sibling `reports/<thread_id>.exploit.<finding_id>.md` file
+when the artifact is produced.
+
+```bash
+curl -s -X POST http://localhost:8000/reviews/<thread_id>/exploits/<finding_id>
+```
+
+Status codes:
+- 201 — generated (approved with artifact, or `skipped_low_confidence`)
+- 200 — already created (idempotent return of existing record)
+- 400 — finding exists but is not `critical` severity
+- 404 — review or finding_id unknown, or `app.state.review_store` is None
+- 409 — `MAX_EXPLOIT_PROPOSALS=3` reached for this review
+- 503 — `app.state.exploit_agent` not configured (misconfigured deploy)
+
+Response body (201 / 200):
+
+```json
+{
+  "finding_id": "abc123def456",
+  "role": "injection",
+  "severity": "critical",
+  "status": "approved",
+  "proposal_text": "Attacker submits crafted payload …",
+  "artifact": "curl -X POST http://localhost:8000/login --data …",
+  "confidence": 8
+}
+```
+
+Defensive use only — the LLM prompts and rendered sibling files all
+carry the canonical disclaimer (see [`CLAUDE.md`](../CLAUDE.md#defensive-use-only--strict-policy)).
+The artifact is hard-instructed to target only the developer's own
+local environment; if the finding implies a third-party live system,
+the model emits the literal string `REFUSED: third-party target`.
+
 ## `GET /chat/{thread_id}/history` — replay chat
 
 ```bash

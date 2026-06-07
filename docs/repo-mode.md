@@ -52,8 +52,8 @@ URL validation (sync in /review) ──→ clone ──→ tree walk
    Truncation (cap exceeded) inserts an explicit
    `truncated: N files over cap of M were not scanned` note in the
    AgentReview summary.
-6. `process_proposal` → `publish_report` write the report under
-   `<reports_dir>/<thread_id>.md` and broadcast the link into the chat.
+6. `publish_report` writes the report under
+   `<reports_dir>/<thread_id>.md` and broadcasts the link into the chat.
 7. `_run_repo_review`'s `finally:` calls `cleanup_snapshot` — the
    tempdir is removed whether the graph completed cleanly or errored.
 

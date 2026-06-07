@@ -55,6 +55,17 @@ INSERT INTO review_findings (
 
 _DELETE_FINDINGS_SQL = "DELETE FROM review_findings WHERE thread_id = $1"
 
+# Append one ExploitProposal payload to the JSONB `exploit_proposals`
+# array on the reviews row. The endpoint calls this AFTER the agent has
+# produced a fresh ExploitProposal — the cap and duplicate-check live
+# in the endpoint (they need to read other state too), so this method
+# is intentionally narrow: append, no validation.
+_APPEND_EXPLOIT_SQL = """
+UPDATE reviews
+SET exploit_proposals = COALESCE(exploit_proposals, '[]'::jsonb) || $2::jsonb
+WHERE thread_id = $1
+"""
+
 _LIST_SQL = """
 SELECT
     thread_id, mode, target_url, ref, author,
@@ -186,6 +197,26 @@ class ReviewStore:
             state.thread_id,
             len(finding_rows),
         )
+
+    async def add_exploit_proposal(self, thread_id: str, proposal: dict) -> None:
+        """Append a single ExploitProposal payload to the reviews row's
+        `exploit_proposals` JSONB column.
+
+        `proposal` must be a JSON-serialisable dict (the shape of
+        `_exploit_proposals_json`'s per-entry payload). The endpoint
+        is responsible for building it from the agent's `ExploitProposal`.
+
+        No-op when `thread_id` is empty — same defensive policy as
+        `save_review`.
+        """
+        if not thread_id:
+            logger.warning("review_store: skipping add_exploit_proposal — thread_id is empty")
+            return
+        # JSONB || JSONB demands an array on both sides — wrap the single
+        # proposal in a list so the concat appends one element.
+        payload = json.dumps([proposal])
+        async with self.pool.acquire() as conn:
+            await conn.execute(_APPEND_EXPLOIT_SQL, thread_id, payload)
 
     async def list_reviews(self, *, limit: int = 50, offset: int = 0) -> list[dict]:
         async with self.pool.acquire() as conn:
