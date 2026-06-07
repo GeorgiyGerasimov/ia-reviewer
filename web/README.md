@@ -205,7 +205,8 @@ panels are migrating from `templates/index.html` piece by piece:
 | ReportPanel       | ✅     | Markdown renderer via `lib/markdown.ts`; XSS-safe by construction; 7 tests |
 | TokenUsagePanel   | ✅     | Per-node breakdown sorted by total tokens desc; 8 tests |
 | CriticalFindingsPanel | ✅ | Defensive-use disclaimer + per-row exploit creation + cap detection; 10 tests |
-| Theme toggle      | TODO   | Dark mode (palette + localStorage persistence) |
+| `useTheme`        | ✅     | Reads `<html data-theme>` from the boot script; flips + persists to localStorage; 7 tests |
+| ThemeToggle + Header | ✅  | Pill button in `<header>` with sun/moon glyph; 5 tests. Boot script in index.html still handles first-paint to avoid FOUC |
 | PWA (manifest + SW) | TODO | vite-plugin-pwa with Workbox                   |
 | Web Push          | TODO   | VAPID; notify on critical findings             |
 | Mobile layout     | TODO   | Drawer sidebar, stacked findings on narrow     |
