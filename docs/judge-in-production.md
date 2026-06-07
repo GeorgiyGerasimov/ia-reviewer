@@ -91,12 +91,11 @@ your real output before automating.
 ### Pattern 2 — Inline graph node after `publish_report`
 
 Add `judge_report` as a graph node between `publish_report` and
-`process_proposal` (or between `finalize_report` and `END`). Each
-review gets a verdict before the user even sees the chat-side
-broadcast.
+`END`. Each review gets a verdict before the user even sees the
+chat-side broadcast.
 
 ```
-... → publish_report → judge_report → process_proposal → ... → END
+... → publish_report → judge_report → END
 ```
 
 Wire the verdict into `state` (new field `judge_verdict:

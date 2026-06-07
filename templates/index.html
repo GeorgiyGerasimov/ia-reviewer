@@ -351,94 +351,10 @@
         .chat-message .role { font-weight: 600; font-size: 0.8rem; text-transform: uppercase; color: var(--muted); margin-bottom: 0.2rem; }
         .chat-message a { color: var(--accent); }
         .empty { color: var(--muted); padding: 1rem; text-align: center; }
-        /* Exploit-approval block. Visible warning + 3-button row inside
-           an agent chat bubble — replaces the "type approve <id>" text
-           flow. The notice strip is always rendered above the buttons so
-           the user reads the defensive-use rule before every approval. */
-        .exploit-action {
-            margin-top: 0.55rem;
-            display: flex;
-            flex-direction: column;
-            gap: 0.45rem;
-        }
-        .exploit-notice {
-            font-size: 0.78rem;
-            line-height: 1.35;
-            background: var(--notice-bg);
-            border: 1px solid var(--notice-border);
-            color: var(--notice-text);
-            border-radius: 6px;
-            padding: 0.45rem 0.6rem;
-        }
-        /* Cycle counter — small but visible. Stays neutral grey while
-           cycles are abundant, switches to amber on the final cycle. */
-        .exploit-counter {
-            font-size: 0.78rem;
-            color: var(--muted);
-            padding: 0.1rem 0.05rem;
-        }
-        .exploit-counter strong {
-            color: var(--text);
-            font-weight: 600;
-        }
-        .exploit-counter-label {
-            text-transform: uppercase;
-            letter-spacing: 0.04em;
-            font-size: 0.7rem;
-            margin-right: 0.25rem;
-        }
-        .exploit-counter-meta {
-            color: #8c959f;
-        }
-        .exploit-buttons {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 0.4rem;
-        }
-        .exploit-btn {
-            padding: 0.3rem 0.7rem;
-            font-size: 0.82rem;
-            font-weight: 500;
-            border: 1px solid var(--border);
-            border-radius: 999px;
-            background: var(--surface);
-            color: var(--text);
-            cursor: pointer;
-        }
-        .exploit-btn.approve { color: var(--done); border-color: var(--done); }
-        .exploit-btn.decline { color: var(--rejected); border-color: var(--rejected); }
-        .exploit-btn:hover:not(:disabled) { background: var(--bg); }
-        /* Disabled (but not chosen) — collapse the saturated approve /
-           decline colours to opaque muted grey instead of an opacity
-           blend. `opacity: 0.55` washed the green/red text into the
-           white background and made the label unreadable (especially in
-           light theme); explicit grey-on-grey reads at any contrast.
-           Also overrides `.approve` / `.decline` colour rules via
-           equal-specificity ordering — these rules sit after them. */
-        .exploit-btn:disabled {
-            cursor: not-allowed;
-            color: var(--muted);
-            border-color: var(--border);
-            background: var(--bg);
-        }
-        .exploit-btn.approve:disabled,
-        .exploit-btn.decline:disabled {
-            color: var(--muted);
-            border-color: var(--border);
-        }
-        /* `.chosen` wins over `:disabled` because it's declared LATER —
-           CSS specificity ties between two single-class selectors, last
-           wins. Clicked button retains the bold accent colour while its
-           siblings fade to grey. No `!important` needed any more. */
-        .exploit-btn.chosen,
-        .exploit-btn.chosen:disabled,
-        .exploit-btn.approve.chosen:disabled,
-        .exploit-btn.decline.chosen:disabled {
-            background: var(--accent);
-            color: var(--on-accent);
-            border-color: var(--accent);
-            cursor: default;
-        }
+        /* (Historical: chat-bubble exploit-approval buttons used to live
+           here. With the on-demand UX rework, every exploit interaction
+           moved into the dedicated #critical-findings panel below the
+           report — see styles further down.) */
 
         /* ── report viewer ───────────────────────────────────────────── */
         #report-panel .report-header {
@@ -907,92 +823,121 @@
             margin-left: 0.3rem;
         }
 
-        /* ── Exploit proposals section (under Final report) ─────────── */
-        #exploit-proposals {
+        /* ── Critical findings + exploit-PoC panel (under Final report) ─
+           One-line disclaimer at the top, then one row per critical
+           finding with: role · severity · file:line, the issue text,
+           and a per-row action (Create exploit / View existing /
+           status badge). Hidden when there are no critical findings.
+        */
+        #critical-findings {
             margin-top: 1.5rem;
         }
-        #exploit-proposals h3 {
-            margin: 0 0 0.6rem;
+        #critical-findings h3 {
+            margin: 0 0 0.4rem;
             font-size: 1rem;
             display: flex;
             align-items: baseline;
-            gap: 0.4rem;
+            gap: 0.5rem;
         }
-        #exploit-proposals h3 .count {
+        #critical-findings h3 .cf-count {
             font-size: 0.75rem;
             color: var(--muted);
             font-weight: 400;
         }
-        .exploit-card {
+        .cf-disclaimer {
+            font-size: 0.78rem;
+            line-height: 1.35;
+            background: var(--notice-bg);
+            border: 1px solid var(--notice-border);
+            color: var(--notice-text);
+            border-radius: 6px;
+            padding: 0.45rem 0.6rem;
+            margin-bottom: 0.7rem;
+        }
+        .cf-cap {
+            font-size: 0.75rem;
+            color: var(--muted);
+            margin-bottom: 0.45rem;
+        }
+        .cf-row {
+            display: flex;
+            align-items: center;
+            gap: 0.6rem;
+            padding: 0.5rem 0.7rem;
+            margin-bottom: 0.45rem;
             border: 1px solid var(--border);
             border-radius: 6px;
-            padding: 0.6rem 0.85rem;
-            margin-bottom: 0.6rem;
             background: var(--surface);
-            /* Prevent the card from being widened by a long finding-id
-               or artifact line. The inner `pre` keeps its own h-scroll. */
             overflow-wrap: anywhere;
             word-break: break-word;
         }
-        .exploit-card-header {
+        .cf-row-info {
+            flex: 1 1 auto;
+            min-width: 0;
+            font-size: 0.85rem;
+            line-height: 1.4;
+        }
+        .cf-row-meta {
+            font-size: 0.75rem;
+            color: var(--muted);
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            display: block;
+            margin-bottom: 0.1rem;
+        }
+        .cf-role {
+            font-family: inherit;
+            font-weight: 600;
+            color: var(--text);
+            text-transform: capitalize;
+        }
+        .cf-severity {
+            font-weight: 600;
+            color: var(--rejected);
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+        .cf-row-issue {
+            color: var(--text);
+        }
+        .cf-row-action {
+            flex: 0 0 auto;
             display: flex;
             align-items: center;
-            gap: 0.5rem;
-            font-size: 0.85rem;
-            margin-bottom: 0.3rem;
+            gap: 0.4rem;
         }
-        .exploit-status {
+        .cf-btn {
+            padding: 0.32rem 0.85rem;
+            font-size: 0.82rem;
+            font-weight: 500;
+            border: 1px solid var(--accent);
+            border-radius: 999px;
+            background: var(--surface);
+            color: var(--accent);
+            cursor: pointer;
+            text-decoration: none;
+            white-space: nowrap;
+        }
+        .cf-btn:hover:not(:disabled) { background: var(--bg); }
+        .cf-btn.view {
+            color: var(--done);
+            border-color: var(--done);
+        }
+        .cf-btn:disabled {
+            cursor: not-allowed;
+            color: var(--muted);
+            border-color: var(--border);
+            background: var(--bg);
+        }
+        .cf-status {
             font-size: 0.7rem;
             font-weight: 600;
             text-transform: uppercase;
             letter-spacing: 0.05em;
-            padding: 0.1rem 0.45rem;
+            padding: 0.18rem 0.5rem;
             border-radius: 3px;
             color: white;
-        }
-        .exploit-status.approved { background: var(--done); }
-        .exploit-status.declined,
-        .exploit-status.timeout_declined { background: var(--muted); }
-        .exploit-status.skipped_low_confidence,
-        .exploit-status.skipped_cap_reached,
-        .exploit-status.skipped_no_human { background: var(--skipped); }
-        .exploit-card-role {
-            font-weight: 600;
-            color: var(--text);
-        }
-        .exploit-card-meta {
-            margin-left: auto;
-            font-size: 0.75rem;
-            color: var(--muted);
-            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-        }
-        .exploit-card-proposal {
-            font-size: 0.88rem;
-            line-height: 1.45;
-            color: var(--text);
-            margin: 0.35rem 0;
-        }
-        .exploit-card-empty {
-            color: var(--muted);
-            font-style: italic;
-            font-size: 0.85rem;
-        }
-        .exploit-card details {
-            margin-top: 0.4rem;
-        }
-        .exploit-card summary {
-            cursor: pointer;
-            font-size: 0.8rem;
-            color: var(--accent);
-            user-select: none;
-        }
-        .exploit-card pre {
-            background: var(--bg);
-            padding: 0.55rem 0.75rem;
-            border-radius: 4px;
-            font-size: 0.8rem;
-            overflow-x: auto;
-            margin-top: 0.4rem;
+            white-space: nowrap;
+            background: var(--muted);
         }
     </style>
 </head>
@@ -1040,7 +985,6 @@
                     <li class="wf-step" data-node="review_decision"><span class="dot"></span>Review decision</li>
                     <li class="wf-step" data-node="aggregate_results"><span class="dot"></span>Aggregate</li>
                     <li class="wf-step" data-node="publish_report"><span class="dot"></span>Publish</li>
-                    <li class="wf-step" data-node="process_proposal"><span class="dot"></span>Exploit proposals</li>
                     <li class="wf-step" data-node="notify_rejection"><span class="dot"></span>Rejected</li>
                 </ol>
             </div>
@@ -1082,13 +1026,10 @@
             <section id="chat-panel" hidden>
                 <h2>Chat — thread <code id="thread-label"></code></h2>
                 <!--
-                  Read-only chat feed. Originally we had a text input here
-                  so users could type `approve <id>` / `decline <id>`; now
-                  the exploit-approval flow uses inline buttons (see
-                  `renderExploitButtons`), and there's no other user→agent
-                  surface that needs free-text input. The form was removed
-                  to declutter; the `chatStore` + WebSocket still drive
-                  the feed exactly as before.
+                  Read-only chat feed. The text input was removed when
+                  the only user→agent interaction (exploit approve /
+                  decline) moved to the on-demand "Create exploit"
+                  buttons inside the Critical findings panel.
                 -->
                 <div id="chat-messages"><div class="empty">No messages yet.</div></div>
             </section>
@@ -1099,7 +1040,7 @@
                     <a id="report-raw-link" href="#" target="_blank">view raw .md ↗</a>
                 </div>
                 <div id="report-body"><div class="empty">Waiting for the review to finish…</div></div>
-                <div id="exploit-proposals" hidden></div>
+                <div id="critical-findings" hidden></div>
             </section>
         </div>
     </div>
@@ -1201,7 +1142,7 @@
 
             reportPanel.hidden = false;
             reportBody.innerHTML = '<div class="empty">Loading report…</div>';
-            renderExploitProposals(null);  // hide section while loading
+            renderCriticalFindings(threadId, null);  // hide while loading
 
             // 1) try the on-disk markdown file.
             let markdownLoaded = false;
@@ -1216,9 +1157,7 @@
                 }
             } catch (_) { /* network blip → try DB next */ }
 
-            // 2) Always try the DB row — it carries exploit_proposals even
-            //    when the on-disk markdown was served from filesystem.
-            //    If markdown wasn't loaded above, fall back to the DB copy.
+            // 2) Fall back to the DB row if the on-disk file was missing.
             try {
                 const r = await fetch("/reviews/" + threadId);
                 if (!r.ok) throw new Error("HTTP " + r.status);
@@ -1230,58 +1169,129 @@
                     reportRawLink.href = "/reports/" + threadId + ".md";
                     reportFetchedForThread = threadId;
                 }
-                renderExploitProposals(data.exploit_proposals || []);
             } catch (err) {
                 if (!markdownLoaded) {
                     reportBody.innerHTML = '<div class="empty">Report not available: ' +
                         escapeHtml(String(err.message || err)) + '</div>';
+                    return;
                 }
-                // Markdown loaded but exploit fetch failed — leave panel
-                // hidden, no error noise.
+                // Markdown loaded, DB lookup failed — non-fatal, keep going.
             }
+
+            // 3) Always render the critical-findings panel from the
+            //    dedicated endpoint. It joins findings with their
+            //    current exploit_status so the per-row buttons can be
+            //    "Create" vs "View" without a second fetch.
+            await loadCriticalFindings(threadId);
         }
 
         /**
-         * Render the Exploit proposals section under the markdown report.
+         * Critical findings + on-demand exploit-PoC panel.
          *
-         * `proposals` shape (from `/reviews/<id>.exploit_proposals`):
-         *   [{finding_id, role, severity, status, proposal_text,
-         *     artifact, confidence}, ...]
+         * Replaces the historical chat-message exploit-approval flow.
+         * Calls `GET /reviews/<tid>/critical-findings` to enumerate
+         * critical findings; each row gets one of:
+         *   • [Create exploit]   — POSTs to /reviews/<tid>/exploits/<fid>
+         *   • [View existing]    — link to the sibling .md artifact
+         *   • status badge       — for low-confidence / declined attempts
          *
-         * `null` → hide the panel (used while loading).
-         * `[]`   → hide the panel (review had no qualifying findings).
+         * One-line disclaimer sits at the top. Cap counter reads
+         * "X / 3 exploits attempted" so the user knows when they're
+         * about to hit the budget ceiling.
          */
-        function renderExploitProposals(proposals) {
-            const panel = document.getElementById("exploit-proposals");
-            if (!proposals || proposals.length === 0) {
+        async function loadCriticalFindings(threadId) {
+            let rows = null;
+            try {
+                const r = await fetch("/reviews/" + threadId + "/critical-findings");
+                if (r.ok) rows = await r.json();
+            } catch (_) { /* leave hidden on network blip */ }
+            renderCriticalFindings(threadId, rows);
+        }
+
+        const MAX_EXPLOITS_PER_REVIEW = 3;  // mirrors src/agents/exploit_proposal.py
+
+        function renderCriticalFindings(threadId, rows) {
+            const panel = document.getElementById("critical-findings");
+            if (!rows || rows.length === 0) {
                 panel.hidden = true;
                 panel.innerHTML = "";
                 return;
             }
-            const approvedCount = proposals.filter(p => p.status === "approved").length;
+            const attempted = rows.filter(r => r.exploit_status).length;
+            const capReached = attempted >= MAX_EXPLOITS_PER_REVIEW;
+
             const parts = [
-                `<h3>Exploit proposals <span class="count">${proposals.length} total · ${approvedCount} approved</span></h3>`,
+                `<h3>Critical findings <span class="cf-count">${rows.length} total · ${attempted}/${MAX_EXPLOITS_PER_REVIEW} exploits attempted</span></h3>`,
+                `<div class="cf-disclaimer">⚠️ Defensive use only — generate this PoC ONLY for testing your own code in an isolated environment. NOT for use against third-party systems or for destructive purposes.</div>`,
             ];
-            for (const p of proposals) {
-                const meta = `${p.role || "?"} · ${p.severity || "?"} · confidence ${p.confidence ?? "?"}/10`;
+            if (capReached) {
+                parts.push(`<div class="cf-cap">Exploit budget reached (${MAX_EXPLOITS_PER_REVIEW}/${MAX_EXPLOITS_PER_REVIEW}). Remaining rows have their Create button disabled.</div>`);
+            }
+            for (const row of rows) {
+                const fid = row.finding_id || "";
+                const role = escapeHtml(row.role || "?");
+                const file = escapeHtml(row.file || "");
+                const line = row.line ? `:${row.line}` : "";
+                const issue = escapeHtml(row.issue || "");
+                const meta = `<span class="cf-role">${role}</span> · <span class="cf-severity">critical</span> · <code>${file}${line}</code>`;
+                let action;
+                if (row.exploit_status === "approved") {
+                    const href = `/reports/${threadId}.exploit.${fid}.md`;
+                    action = `<a class="cf-btn view" href="${escapeHtml(href)}" target="_blank">View existing</a>`;
+                } else if (row.exploit_status) {
+                    // skipped_low_confidence / declined / etc — show status, no button.
+                    const label = (row.exploit_status || "").replace(/_/g, " ");
+                    action = `<span class="cf-status">${escapeHtml(label)}</span>`;
+                } else if (capReached) {
+                    action = `<button type="button" class="cf-btn" disabled>Cap reached</button>`;
+                } else {
+                    action = `<button type="button" class="cf-btn" data-fid="${escapeHtml(fid)}" data-tid="${escapeHtml(threadId)}">Create exploit</button>`;
+                }
                 parts.push(`
-                    <div class="exploit-card">
-                        <div class="exploit-card-header">
-                            <span class="exploit-status ${p.status || 'unknown'}">${(p.status || 'unknown').replace(/_/g, ' ')}</span>
-                            <span class="exploit-card-role">${escapeHtml(p.role || '')}</span>
-                            <span class="exploit-card-meta">${escapeHtml(meta)} · <code>${escapeHtml((p.finding_id || '').slice(0, 12))}</code></span>
+                    <div class="cf-row" data-fid="${escapeHtml(fid)}">
+                        <div class="cf-row-info">
+                            <span class="cf-row-meta">${meta}</span>
+                            <span class="cf-row-issue">${issue}</span>
                         </div>
-                        ${p.proposal_text
-                            ? `<div class="exploit-card-proposal">${escapeHtml(p.proposal_text)}</div>`
-                            : `<div class="exploit-card-empty">(no proposal — ${escapeHtml((p.status || '').replace(/_/g, ' '))})</div>`}
-                        ${p.artifact
-                            ? `<details><summary>Show PoC artifact</summary><pre>${escapeHtml(p.artifact)}</pre></details>`
-                            : ""}
+                        <div class="cf-row-action">${action}</div>
                     </div>
                 `);
             }
             panel.innerHTML = parts.join("");
             panel.hidden = false;
+
+            panel.querySelectorAll('.cf-btn[data-fid]:not([disabled])').forEach(btn => {
+                btn.addEventListener("click", () => createExploit(btn));
+            });
+        }
+
+        async function createExploit(btn) {
+            const fid = btn.dataset.fid;
+            const tid = btn.dataset.tid;
+            if (!fid || !tid) return;
+            const originalLabel = btn.textContent;
+            btn.textContent = "Generating…";
+            btn.disabled = true;
+            try {
+                const r = await fetch(`/reviews/${tid}/exploits/${fid}`, {
+                    method: "POST",
+                });
+                if (r.status === 409) {
+                    btn.textContent = "Cap reached";
+                    return;
+                }
+                if (!r.ok) {
+                    btn.textContent = `Failed (${r.status})`;
+                    setTimeout(() => { btn.textContent = originalLabel; btn.disabled = false; }, 4000);
+                    return;
+                }
+                // Refresh the panel — the new row state (approved / skipped)
+                // dictates the action that replaces the button.
+                await loadCriticalFindings(tid);
+            } catch (e) {
+                btn.textContent = `Error: ${e.message || e}`;
+                setTimeout(() => { btn.textContent = originalLabel; btn.disabled = false; }, 4000);
+            }
         }
 
         pastRefreshBtn.addEventListener("click", refreshPastReviews);
@@ -1549,8 +1559,8 @@
         const chatPanel = document.getElementById("chat-panel");
         const chatMessages = document.getElementById("chat-messages");
         // No free-text user→server channel any more — the chat feed is
-        // read-only and decisions go through `renderExploitButtons`.
-        // chatForm / chatInput were removed alongside the form element.
+        // read-only. Exploit decisions live in the Critical findings
+        // panel (POST /reviews/{tid}/exploits/{fid}).
         const threadLabel = document.getElementById("thread-label");
         const reportPanel = document.getElementById("report-panel");
         const reportBody = document.getElementById("report-body");
@@ -1595,11 +1605,10 @@
             configuration_review: ["review_decision"],
             security_reviewers: ["review_decision"],
             review_decision: ["aggregate_results"],
-            // Post-topology-swap order: publish writes the report to disk
-            // BEFORE the (possibly human-gated) exploit-proposal cycle, so
-            // the report is always durable even if the user never approves.
+            // Exploit drafting is no longer part of the graph — it runs
+            // on demand via POST /reviews/{tid}/exploits/{fid}. So
+            // publish_report is the last node on the accept path.
             aggregate_results: ["publish_report"],
-            publish_report: ["process_proposal"],
         };
 
         // Nodes that only run on the accept path. When validate_request
@@ -1609,7 +1618,7 @@
             "dependency_review", "injection_review", "owasp_review",
             "configuration_review",
             "security_reviewers", "review_decision", "aggregate_results",
-            "process_proposal", "publish_report",
+            "publish_report",
         ];
 
         function resetWorkflow() {
@@ -1678,9 +1687,8 @@
          *
          * Priority across multiple events for the same node:
          *   fired > rejected > skipped
-         * so a process_proposal that produces a real PoC later in the run
-         * can upgrade gray → green; a single rejected reading sticks even
-         * if a later empty drain fires.
+         * Empty drains can't downgrade an earlier `fired`, and a single
+         * `rejected` reading sticks even if a later empty fires.
          */
         // ── per-file scan progress ─────────────────────────────────────
         //
@@ -1887,6 +1895,13 @@
             if (node === "publish_report" || node === "notify_rejection") {
                 // Backend has just written /reports/<tid>.md — fetch and render.
                 fetchAndRenderReport(currentThread);
+                // The on-demand critical-findings panel reads from the
+                // DB (which save_review writes after this point). Give
+                // it a short head-start so the row count reflects the
+                // persisted state, then load.
+                if (node === "publish_report" && currentThread) {
+                    setTimeout(() => loadCriticalFindings(currentThread), 800);
+                }
             }
         }
 
@@ -1908,6 +1923,9 @@
             // the report file exists with the rejection notice — make sure
             // the panel pulls it.
             if (!reportFetchedForThread) fetchAndRenderReport(currentThread);
+            // Refresh the critical-findings panel — by now the DB row
+            // has been persisted so the per-row counts are authoritative.
+            if (currentThread) loadCriticalFindings(currentThread);
             // New review just finished → refresh the past-reviews list so
             // the operator sees the new row appear without manual refresh.
             refreshPastReviews();
@@ -2112,10 +2130,10 @@
             }
         });
 
-        // Free-text chat-input was removed — exploit decisions go through
-        // the inline button row (see `renderExploitButtons`). Any future
-        // user→agent surface should add its own dedicated UI, not re-add
-        // a generic textbox here.
+        // Free-text chat-input was removed — exploit decisions live in
+        // the on-demand Critical findings panel (POST /reviews/{tid}/
+        // exploits/{fid}). Any future user→agent surface should add its
+        // own dedicated UI, not re-add a generic textbox here.
 
         function openChat(threadId) {
             currentThread = threadId;
@@ -2192,88 +2210,8 @@
             }
             el.appendChild(role);
             el.appendChild(text);
-
-            // Structured interrupts get an inline button row instead of
-            // forcing the user to type `approve <id> file` etc.
-            if (message.interrupt && message.interrupt.kind === "exploit_approval") {
-                el.appendChild(renderExploitButtons(message.interrupt));
-            }
-
             chatMessages.appendChild(el);
             chatMessages.scrollTop = chatMessages.scrollHeight;
-        }
-
-        /**
-         * Render the 3-button row for an `exploit_approval` interrupt.
-         *
-         * Each button maps to one resume token:
-         *   "Approve · embed in report"  → `approve <id> embed`
-         *   "Approve · save as file"     → `approve <id> file`
-         *   "Decline"                    → `decline <id>`
-         *
-         * After click, the whole row is disabled (the user can't queue a
-         * second answer for the same finding; the graph has already
-         * consumed the resume).
-         */
-        function renderExploitButtons(meta) {
-            // Wrapper holds a visible defensive-use notice ABOVE the
-            // button row. Static text, but high-visibility — the user
-            // reads it every time they're about to approve a PoC.
-            const wrap = document.createElement("div");
-            wrap.className = "exploit-action";
-
-            const notice = document.createElement("div");
-            notice.className = "exploit-notice";
-            notice.textContent =
-                "⚠️ Defensive use only — generate this PoC ONLY for testing " +
-                "your own code in an isolated environment. NOT for use against " +
-                "third-party systems or for destructive purposes.";
-            wrap.appendChild(notice);
-
-            // Cycle counter ("Exploit cycle 2 of 3") — when the server
-            // sent us the counts. Shown as a thin tag-line just above the
-            // buttons so the user knows how many decisions remain before
-            // the cap auto-skips everything else.
-            const usedRaw = meta.cycles_used;
-            const maxRaw = meta.cycles_max;
-            if (Number.isInteger(usedRaw) && Number.isInteger(maxRaw) && maxRaw > 0) {
-                const counter = document.createElement("div");
-                counter.className = "exploit-counter";
-                const cycleNum = usedRaw + 1;        // 1-indexed for humans
-                const remaining = Math.max(0, maxRaw - cycleNum);
-                counter.innerHTML =
-                    `<span class="exploit-counter-label">Exploit cycle</span> ` +
-                    `<strong>${cycleNum}</strong> of ${maxRaw} ` +
-                    `<span class="exploit-counter-meta">` +
-                    `(${remaining} ${remaining === 1 ? "decision" : "decisions"} ` +
-                    `left after this one)</span>`;
-                wrap.appendChild(counter);
-            }
-
-            const row = document.createElement("div");
-            row.className = "exploit-buttons";
-            const fid = meta.finding_id || "";
-
-            const mkBtn = (label, payload, variant) => {
-                const btn = document.createElement("button");
-                btn.type = "button";
-                btn.className = `exploit-btn ${variant || ""}`.trim();
-                btn.textContent = label;
-                btn.addEventListener("click", () => {
-                    if (!socket || socket.readyState !== WebSocket.OPEN) return;
-                    socket.send(JSON.stringify({text: payload}));
-                    // Disable the whole row — one decision per finding.
-                    row.querySelectorAll("button").forEach((b) => { b.disabled = true; });
-                    btn.classList.add("chosen");
-                });
-                return btn;
-            };
-
-            row.appendChild(mkBtn("Approve · embed in report", `approve ${fid} embed`, "approve"));
-            row.appendChild(mkBtn("Approve · save as file", `approve ${fid} file`, "approve"));
-            row.appendChild(mkBtn("Decline", `decline ${fid}`, "decline"));
-            wrap.appendChild(row);
-            return wrap;
         }
 
         function appendSystem(text) {

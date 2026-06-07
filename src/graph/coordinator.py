@@ -5,7 +5,6 @@ from langgraph.graph.state import CompiledStateGraph
 from src.agents.configuration import ConfigurationReviewer
 from src.agents.coordinator import CoordinatorAgent
 from src.agents.dependency import DependencyReviewer
-from src.agents.exploit_proposal import ExploitProposalAgent, route_after_proposal
 from src.agents.injection import InjectionReviewer
 from src.agents.owasp import OWASPTop10Reviewer
 from src.agents.past_context import PastContextAgent
@@ -30,7 +29,7 @@ def route_after_validation(state: ReviewState) -> str:
     """Conditional-edge router after `validate_request`.
 
     - `accepted=True`  → `retrieve_past_context` (RAG step). That node
-      itself hands off to all three security reviewers in parallel via a
+      itself hands off to all four security reviewers in parallel via a
       static edge, so the fan-out point moved one hop down the graph.
     - `accepted=False` → `notify_rejection`.
     - `validation is None` (safety net for a partially-implemented validator)
@@ -61,7 +60,6 @@ def build_review_graph(
     injection: InjectionReviewer | None = None,
     owasp: OWASPTop10Reviewer | None = None,
     configuration: ConfigurationReviewer | None = None,
-    exploit_proposal: ExploitProposalAgent | None = None,
     past_context: PastContextAgent | None = None,
     report_formatter: ReportFormatter | None = None,
     *,
@@ -72,27 +70,24 @@ def build_review_graph(
 
     Topology:
         START → validate_request
-        validate_request ──cond──→ notify_rejection → END                  (reject)
-                          ──cond──→ {dep, injection, owasp, configuration}_review  (accept, parallel)
-                                            ↓ fan-in
-                                    review_decision
-                                            ↓ cond
-                                            ├──→ {reviewers}   (rerun, cycle++)
-                                            └──→ aggregate_results
-                                                    ↓
-                                            publish_report                  (report saved BEFORE any human Q&A)
-                                                    ↓
-                                            process_proposal                (Phase C — sequential, chat-only)
-                                                    ↓ cond
-                                                    ├──→ process_proposal   (more findings)
-                                                    └──→ END
+        validate_request ──cond──→ notify_rejection → END                          (reject)
+                          ──cond──→ retrieve_past_context                          (accept)
+                                              ↓
+                                    {dep, injection, owasp, configuration}_review  (parallel fan-out)
+                                              ↓ fan-in
+                                      review_decision
+                                              ↓ cond
+                                              ├──→ {reviewers}   (rerun, cycle++)
+                                              └──→ aggregate_results
+                                                          ↓
+                                                  format_report
+                                                          ↓
+                                                  publish_report → END
 
-    Note the publish↔proposal ordering: the report is written to disk
-    the moment aggregate finishes; exploit-proposal interrupts that
-    follow can pause the graph forever without ever blocking the
-    primary deliverable. The proposals collected after publishing live
-    in `state.exploit_proposals` (chat / UI) but do NOT make it into
-    the on-disk markdown — by design.
+    Exploit generation is NOT in the graph anymore — it runs on demand
+    via `POST /reviews/{tid}/exploits/{fid}` after the report is
+    published. See `src/agents/exploit_proposal.py` for the agent that
+    backs that endpoint and `main.py` for the route handler.
     """
     coordinator = coordinator or CoordinatorAgent()
     # Reviewers need a GitHubClient in repo-mode to call fetch_file per file.
@@ -110,9 +105,6 @@ def build_review_graph(
     injection = injection or InjectionReviewer(github=github)
     owasp = owasp or OWASPTop10Reviewer(github=github)
     configuration = configuration or ConfigurationReviewer(github=github)
-    exploit_proposal = exploit_proposal or ExploitProposalAgent(
-        interrupts_enabled=interrupts_enabled,
-    )
     # `PastContextAgent` is always added to the graph — when its embedder
     # or store is None, `run()` short-circuits to an empty update. Keeps
     # the topology stable across "RAG configured" / "RAG disabled" setups.
@@ -143,15 +135,7 @@ def build_review_graph(
     graph.add_node("review_decision", timed_node("review_decision")(review_decision.run))
     graph.add_node("aggregate_results", timed_node("aggregate_results")(coordinator.aggregate))
     graph.add_node("format_report", timed_node("format_report")(report_formatter.run))
-    graph.add_node("process_proposal", timed_node("process_proposal")(exploit_proposal.run))
     graph.add_node("publish_report", timed_node("publish_report")(coordinator.publish))
-    # Re-render the main `.md` once the exploit loop has populated
-    # state.exploit_proposals, and write sibling `<tid>.exploit.<fid>.md`
-    # files for every save_mode="file" approved entry. publish_report wrote
-    # a pre-exploit snapshot of the report so it's durable even if the
-    # user never answers the chat prompts; this node updates it once the
-    # answers (or timeouts) have all landed.
-    graph.add_node("finalize_report", timed_node("finalize_report")(coordinator.finalize_exploits))
 
     graph.add_edge(START, "validate_request")
     graph.add_conditional_edges(
@@ -161,7 +145,7 @@ def build_review_graph(
     )
     graph.add_edge("notify_rejection", END)
 
-    # retrieve_past_context fans out to the three security reviewers in parallel.
+    # retrieve_past_context fans out to the four security reviewers in parallel.
     # The reviewers' `_build_context` reads `state.past_findings_by_role` that
     # this node just populated (or left empty when RAG is disabled).
     for node in _SECURITY_NODES:
@@ -176,25 +160,13 @@ def build_review_graph(
         [*_SECURITY_NODES, "aggregate_results"],
     )
 
-    # Publish FIRST — the rendered report is durable as soon as aggregate
-    # produced it (and optional formatter polished it). The exploit branch
-    # runs afterwards (chat-only) and cannot stall the report on a human
-    # prompt that may never get answered.
-    #
     # `format_report` sits between aggregate and publish. When
     # `ENABLE_REPORT_FORMATTER=False` (the default), the node returns
     # `{}` and the deterministic report passes through unchanged. When
-    # ON, it splices a `### TL;DR` section into `state.final_report` and
-    # stores the prose in `state.report_tldr` for later re-splicing by
-    # `finalize_exploits`. Fail-soft on any error.
+    # ON, it splices a `### TL;DR` section into `state.final_report`.
+    # Fail-soft on any error.
     graph.add_edge("aggregate_results", "format_report")
     graph.add_edge("format_report", "publish_report")
-    graph.add_edge("publish_report", "process_proposal")
-    graph.add_conditional_edges(
-        "process_proposal",
-        route_after_proposal,
-        ["process_proposal", "finalize_report"],
-    )
-    graph.add_edge("finalize_report", END)
+    graph.add_edge("publish_report", END)
 
     return graph.compile(checkpointer=checkpointer)

@@ -105,7 +105,7 @@ client-derived "active" pulsing animation.
 | Idle | _(none)_ | transparent outline | Default before any event. |
 | Active | `.active` | blue, pulsing | Backend emitted `status:"active"` for this node, **or** the JS cascaded `.active` from the predecessor in `NEXT_AFTER`. Indicates work in progress. |
 | Done | `.done` | green | `status:"fired"`. Node ran with real output. |
-| Skipped | `.skipped` | dark gray | `status:"empty"` (e.g. scope-filtered reviewer returned `{}`, or `process_proposal` had no findings to draft), or set by `finalizeWorkflow` on `__done__` for any node that never fired at all. |
+| Skipped | `.skipped` | dark gray | `status:"empty"` (e.g. scope-filtered reviewer returned `{}`), or set by `finalizeWorkflow` on `__done__` for any node that never fired at all. |
 | Rejected | `.rejected` | red | `status:"rejected"` — `notify_rejection` actually ran. Only happens when the validator rejected the request. |
 
 Priority across multiple events for the same node:
@@ -123,8 +123,8 @@ mutually-exclusive successors:
   never fire). Cascade `.active` to the security-reviewer fan-out.
 - `accepted: false` → mark all the happy-path nodes (`dependency`,
   `injection`, `owasp`, `security_reviewers`, `review_decision`,
-  `aggregate_results`, `process_proposal`, `publish_report`) as
-  `.skipped`. Cascade `.active` to `notify_rejection`.
+  `aggregate_results`, `publish_report`) as `.skipped`. Cascade
+  `.active` to `notify_rejection`.
 
 Without this hint the UI would spin _both_ branches for several
 seconds until the actual next event arrived, which looked confusing.
@@ -142,8 +142,7 @@ const NEXT_AFTER = {
     owasp_review: ["review_decision"],
     security_reviewers: ["review_decision"],
     review_decision: ["aggregate_results"],
-    aggregate_results: ["process_proposal"],
-    process_proposal: ["publish_report"],
+    aggregate_results: ["publish_report"],
 };
 ```
 

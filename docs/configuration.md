@@ -132,8 +132,7 @@ In-code caps (not env-overridable):
 |---|---|---|---|
 | `MAX_FILE_BYTES` | [`repo_fetcher.py`](../src/integrations/repo_fetcher.py) | 200_000 | Per-file size during snapshot walk. |
 | `MAX_CYCLES` | [`review_decision.py`](../src/agents/review_decision.py) | 3 | Initial pass + 2 human-approved reruns. |
-| `MAX_EXPLOIT_PROPOSALS` | [`exploit_proposal.py`](../src/agents/exploit_proposal.py) | 3 | Findings handled by the exploit branch. |
-| `EXPLOIT_TIMEOUT_SECONDS` | [`main.py`](../main.py) | 60.0 | Human-approval timeout per finding. |
+| `MAX_EXPLOIT_PROPOSALS` | [`exploit_proposal.py`](../src/agents/exploit_proposal.py) | 3 | Records the on-demand exploit endpoint will persist per review (any status). Beyond this the endpoint returns 409. |
 
 ## Observability — Langfuse
 

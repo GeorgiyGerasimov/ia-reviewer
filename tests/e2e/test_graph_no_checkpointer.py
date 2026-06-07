@@ -1,19 +1,21 @@
 """End-to-end: a graph compiled WITHOUT a checkpointer must run to
-publish_report even when reviewers surface major/critical findings.
+publish_report even when reviewers surface critical findings.
 
-Background: `ExploitProposalAgent.run` calls `interrupt()` for any
-high-confidence finding. Without a checkpointer the LangGraph runtime
-can't pause + resume, so the astream loop terminates on the interrupt
-sentinel and `publish_report` never runs — leaving the user with a
-"Review complete" chat message and a 404 on `/reports/<thread_id>.md`.
+Background: `ExploitProposalAgent.run` used to call `interrupt()` for any
+high-confidence critical finding. Without a checkpointer the LangGraph
+runtime can't pause + resume, so the astream loop terminated on the
+interrupt sentinel and `publish_report` never ran — leaving the user
+with a "Review complete" chat message and a 404 on `/reports/<id>.md`.
 
-Fix contract: when `build_review_graph(..., checkpointer=None)`, both
-`ExploitProposalAgent` and `ReviewDecisionAgent` are constructed with
-`interrupts_enabled=False`. They degrade gracefully — no `interrupt()`
-call — and the graph runs end-to-end to publish_report.
+The exploit branch has since moved out of the graph entirely (on-demand
+via `POST /reviews/{tid}/exploits/{fid}`), so there's no interrupt to
+trip on regardless of checkpointer. The remaining interrupt source is
+`ReviewDecisionAgent` (Phase B clarification), which is constructed
+with `interrupts_enabled=False` when checkpointer is None.
+
+This test pins the contract that the graph runs end-to-end even when
+critical findings exist and no checkpointer is wired.
 """
-
-from langchain_core.messages import AIMessage
 
 from src.agents.coordinator import CoordinatorAgent
 from src.graph.state import AgentReview, ReviewRequest, ReviewState, ValidationVerdict
@@ -51,22 +53,12 @@ class _MajorFindingReviewer:
         return {"agent_reviews": [review]}
 
 
-async def test_graph_without_checkpointer_completes_to_publish_even_with_major_findings(
+async def test_graph_without_checkpointer_completes_to_publish_even_with_critical_findings(
     mocker, tmp_path
 ):
     """The whole point: no checkpointer + a critical finding used to leave
-    the graph stuck at `interrupt()` with no way to resume. The agents must
-    auto-skip interrupts when no checkpointer is wired and let publish run."""
-    # Mock the LLM used by ExploitProposalAgent to return a high-confidence
-    # draft, which (in the buggy code path) would trigger interrupt(). With
-    # the fix, the agent must NOT call interrupt() because there's no
-    # checkpointer.
-    fake_llm = mocker.AsyncMock()
-    fake_llm.ainvoke = mocker.AsyncMock(
-        return_value=AIMessage(content='```json\n{"confidence": 9, "proposal": "drop a UNION SELECT into the param", "reasoning": "obvious"}\n```')
-    )
-    mocker.patch("src.agents.exploit_proposal.ModelFactory.get", return_value=fake_llm)
-
+    the graph stuck at the old `interrupt()` with no way to resume. With
+    exploit drafting moved out of the graph, this must just work."""
     github = mocker.AsyncMock()
     github.post_pr_comment.return_value = 1
     coordinator = CoordinatorAgent(github=github, reports_dir=tmp_path)
@@ -95,10 +87,7 @@ async def test_graph_without_checkpointer_completes_to_publish_even_with_major_f
         f"publish_report did not run / write report; dir contents = "
         f"{list(tmp_path.iterdir())!r}"
     )
-    # Exploit proposals must have been "skipped" rather than awaiting a human.
-    proposals = final.get("exploit_proposals") or []
-    assert proposals, "expected at least one ExploitProposal entry"
-    assert all(p.status.startswith("skipped") for p in proposals), (
-        f"with no checkpointer, ALL findings must be skipped (no interrupt); "
-        f"got statuses = {[p.status for p in proposals]!r}"
-    )
+    # The exploit branch has been removed from the graph — no proposals
+    # are produced server-side regardless of checkpointer state. They
+    # are created on demand via POST /reviews/{tid}/exploits/{fid}.
+    assert final.get("exploit_proposals") in (None, [])

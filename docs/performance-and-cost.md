@@ -46,9 +46,10 @@ diff; "Repo" = full-repo scan via `git clone --depth=1`.
 | `owasp_review` | 1–3 s | N × (1–3 s) where N ≤ `MAX_FILES_PER_AGENT=200` | Same shape as injection. |
 | `review_decision` | 0–10 ms (heuristic) | 0–10 ms | Pure-code unless interrupted; on rerun the path loops back. |
 | `aggregate_results` | 1–20 ms | 1–50 ms | Pure render (no I/O). |
-| `publish_report` | 100–500 ms | 10–50 ms | PR mode: GitHub API. Repo mode: disk only. |
-| `process_proposal` | 0 ms **or** 1–3 s + human wait | same | 0 if no critical findings; otherwise LLM draft + human interrupt (chat). Human wait is unbounded but auto-declined after `EXPLOIT_TIMEOUT_SECONDS=60`. |
-| `finalize_report` | 10–50 ms | 10–50 ms | Render + disk write (+ sibling files for save_mode=file). |
+| `publish_report` | 100–500 ms | 10–50 ms | PR mode: GitHub API. Repo mode: disk only. End of the graph. |
+
+Out-of-band:
+- `POST /reviews/{tid}/exploits/{fid}` — 2 LLM calls (draft + artifact), ~3–8 s per click. Capped at `MAX_EXPLOIT_PROPOSALS=3` per review.
 
 The reviewers fan out in parallel — repo-mode `injection` + `owasp` run
 concurrently, so the slow path is `max(injection_time, owasp_time)`,
@@ -135,7 +136,7 @@ Per-mode budget breakdown:
 | `injection_review` | 1 | $0.03–$0.10 |
 | `owasp_review` | 1 | $0.03–$0.10 |
 | `review_decision` (LLM only on rerun) | 0–2 (cap MAX_CYCLES=3) | $0–$0.20 |
-| `process_proposal` (per critical finding) | 0–2 × 3 (cap MAX_EXPLOIT_PROPOSALS=3) | $0–$0.60 |
+| Exploit endpoint (per click — out-of-band) | 0–2 × 3 (cap MAX_EXPLOIT_PROPOSALS=3) | $0–$0.60 |
 | **Typical PR run** | | **$0.05–$0.50** |
 
 **Repo mode** (per-file LLM calls in `injection` + `owasp`):
@@ -148,7 +149,7 @@ Per-mode budget breakdown:
 | `injection_review` | N files × 1 call, N ≤ 200 | $3–$20 |
 | `owasp_review` | M files × 1 call, M ≤ 200 | $3–$20 |
 | `review_decision` | 0–2 | $0–$0.20 |
-| `process_proposal` | 0–6 | $0–$0.60 |
+| Exploit endpoint (out-of-band) | 0–6 | $0–$0.60 |
 | **Typical repo run, N=M=50** | | **$1–$3** |
 | **Saturated repo run, N=M=200** | | **$10–$40** |
 
