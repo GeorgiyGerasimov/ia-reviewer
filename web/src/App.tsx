@@ -142,6 +142,11 @@ export function App() {
             snapshot.
           </p>
         </div>
+        {/* Order: theme toggle FIRST (left of the link), Langfuse
+            link SECOND (rightmost). Two pills next to each other
+            on the right side of the header — operator clicks the
+            theme more often, so it sits closer to the title. */}
+        <ThemeToggle />
         {health?.langfuse_url && (
           <a
             href={health.langfuse_url}
@@ -158,7 +163,6 @@ export function App() {
             View traces ↗
           </a>
         )}
-        <ThemeToggle />
       </header>
 
       <main className="grid grid-cols-1 md:grid-cols-[260px_1fr] gap-6">
