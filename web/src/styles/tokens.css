@@ -1,0 +1,78 @@
+/* Design tokens — single source of truth for colors / radii / shadows.
+   Mirrors the palette in legacy `templates/index.html`. When the React
+   migration finishes and we delete the legacy template, this file
+   stays as the canonical token source. Dark theme is opt-in via
+   `[data-theme="dark"]` on <html>, set by the boot script in
+   index.html before stylesheet parsing. */
+
+:root {
+  /* Structural */
+  --bg: #f6f8fa;
+  --surface: #ffffff;
+  --surface-hover: #fdfdfe;
+  --surface-selected: #f0f7ff;
+  --code-bg: #f6f8fa;
+  --border: #d0d7de;
+
+  /* Text */
+  --text: #1f2328;
+  --muted: #656d76;
+
+  /* Brand + status */
+  --accent: #1f6feb;
+  --accent-dark: #1856b9;
+  --accent-tint: rgba(31, 111, 235, 0.08);
+  --done: #2da44e;
+  --skipped: #6e7781;
+  --rejected: #cf222e;
+  --error: #cf222e;
+  --severity-minor: #d4a72c;
+  --severity-major: #fb8500;
+
+  /* Amber notice (exploit defensive-use banner) */
+  --notice-bg: #fff8e6;
+  --notice-border: #ffd33d99;
+  --notice-text: #6e4f00;
+
+  --on-accent: #ffffff;
+
+  /* Aliases — kept for now to ease porting from the legacy template. */
+  --text-primary: var(--text);
+  --text-secondary: var(--muted);
+  --radius-sm: 6px;
+}
+
+:root[data-theme="dark"] {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface-hover: #1c2128;
+  --surface-selected: #1f2733;
+  --code-bg: #0d1117;
+  --border: #30363d;
+
+  --text: #c9d1d9;
+  --muted: #8b949e;
+
+  --accent: #58a6ff;
+  --accent-dark: #3081e3;
+  --accent-tint: rgba(88, 166, 255, 0.12);
+  --done: #2ea043;
+  --skipped: #6e7781;
+  --rejected: #f85149;
+  --error: #f85149;
+  --severity-minor: #d29922;
+  --severity-major: #db6d28;
+
+  --notice-bg: #2c2410;
+  --notice-border: #7a5d10;
+  --notice-text: #e3b341;
+
+  --on-accent: #ffffff;
+}
+
+:root {
+  color-scheme: light;
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+}
