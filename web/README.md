@@ -170,7 +170,8 @@ panels are migrating from `templates/index.html` piece by piece:
 | `TokenSummary`    | ✅     | Reference component (Tailwind utilities)       |
 | shadcn/ui init    | ✅     | components.json + lib/utils.ts (cn helper)     |
 | shadcn batch 1    | ✅     | Button, Card, Dialog, Sheet, Tabs, Badge, Tooltip + 6-test smoke suite on Button |
-| API client        | TODO   | Typed `fetch` wrappers, hook layer             |
+| API client        | ✅     | `src/api/{types,client}.ts` — typed wrappers + APIError; 19 tests |
+| WebSocket hook    | TODO   | `src/lib/useReviewStream.ts` — open WS, parse envelopes |
 | WorkflowDiagram   | TODO   | Left-rail step indicators                      |
 | ActiveReviews     | TODO   | Sidebar list with live token counter           |
 | PastReviews       | TODO   | Sidebar list, GET /reviews                     |
