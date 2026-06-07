@@ -1,0 +1,111 @@
+@import "tailwindcss";
+
+/* Bridge our `[data-theme="dark"]` attribute (set by index.html's boot
+   script before stylesheet parsing) to Tailwind's `dark:` variant.
+   Without this, `dark:bg-bg` only fires under the default `.dark`
+   class. The selector targets the element itself AND any descendant
+   so the variant works at any depth in the tree. */
+@custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
+
+/* Runtime CSS variables — light mode (default). Carry the actual
+   color values; the boot script flips `data-theme="dark"` on <html>
+   and the override block below swaps them. */
+:root {
+  --bg: #f6f8fa;
+  --surface: #ffffff;
+  --surface-hover: #fdfdfe;
+  --surface-selected: #f0f7ff;
+  --code-bg: #f6f8fa;
+  --border: #d0d7de;
+  --text: #1f2328;
+  --muted: #656d76;
+  --accent: #1f6feb;
+  --accent-dark: #1856b9;
+  --accent-tint: rgba(31, 111, 235, 0.08);
+  --done: #2da44e;
+  --skipped: #6e7781;
+  --rejected: #cf222e;
+  --error: #cf222e;
+  --severity-minor: #d4a72c;
+  --severity-major: #fb8500;
+  --notice-bg: #fff8e6;
+  --notice-border: #ffd33d99;
+  --notice-text: #6e4f00;
+  --on-accent: #ffffff;
+  color-scheme: light;
+}
+
+[data-theme="dark"] {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface-hover: #1c2128;
+  --surface-selected: #1f2733;
+  --code-bg: #0d1117;
+  --border: #30363d;
+  --text: #c9d1d9;
+  --muted: #8b949e;
+  --accent: #58a6ff;
+  --accent-dark: #3081e3;
+  --accent-tint: rgba(88, 166, 255, 0.12);
+  --done: #2ea043;
+  --skipped: #6e7781;
+  --rejected: #f85149;
+  --error: #f85149;
+  --severity-minor: #d29922;
+  --severity-major: #db6d28;
+  --notice-bg: #2c2410;
+  --notice-border: #7a5d10;
+  --notice-text: #e3b341;
+  --on-accent: #ffffff;
+  color-scheme: dark;
+}
+
+/* Expose our runtime variables to Tailwind's utility generator.
+   `@theme inline` registers them WITHOUT freezing — they keep
+   reading from :root / [data-theme="dark"] at runtime, so dark mode
+   flips reactively. Each `--color-foo` here generates the matching
+   `bg-foo`, `text-foo`, `border-foo`, ... utility classes. */
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-hover: var(--surface-hover);
+  --color-surface-selected: var(--surface-selected);
+  --color-code-bg: var(--code-bg);
+  --color-border: var(--border);
+  --color-text: var(--text);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --color-accent-dark: var(--accent-dark);
+  --color-done: var(--done);
+  --color-skipped: var(--skipped);
+  --color-rejected: var(--rejected);
+  --color-error: var(--error);
+  --color-severity-minor: var(--severity-minor);
+  --color-severity-major: var(--severity-major);
+  --color-notice-bg: var(--notice-bg);
+  --color-notice-border: var(--notice-border);
+  --color-notice-text: var(--notice-text);
+  --color-on-accent: var(--on-accent);
+}
+
+/* Document baseline — kept minimal. Component-specific styles use
+   Tailwind utilities. */
+body {
+  font-family:
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+  max-width: 1180px;
+  margin: 2rem auto;
+  padding: 0 1rem;
+  color: var(--text);
+  background: var(--bg);
+  transition:
+    background 0.18s ease,
+    color 0.18s ease;
+}
+
+* {
+  box-sizing: border-box;
+}
