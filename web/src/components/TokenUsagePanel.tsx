@@ -40,12 +40,28 @@ export function TokenUsagePanel({ usage }: TokenUsagePanelProps) {
     <section className="rounded-xl border border-border bg-background p-4">
       <header className="flex items-baseline justify-between mb-2">
         <h2 className="text-base font-semibold m-0">Token usage</h2>
-        <div className="text-sm tabular-nums font-mono text-foreground">
-          <strong className="font-semibold">{fmtTokens(totalIn)}</strong> in
-          <span className="text-muted-foreground"> · </span>
-          <strong className="font-semibold">{fmtTokens(totalOut)}</strong> out
-          <span className="text-muted-foreground"> · </span>
-          {totalCalls} {totalCalls === 1 ? "call" : "calls"}
+        <div className="flex items-baseline gap-2 text-sm tabular-nums font-mono text-foreground">
+          {/* Grand total first — the operator's primary question is
+              "how much did this scan cost?" The in/out split is
+              relevant but secondary, so it sits in the
+              parenthesised breakdown. */}
+          <strong
+            data-testid="tu-total"
+            className="font-semibold text-base"
+            title="Total tokens (input + output) across all graph nodes"
+          >
+            {fmtTokens(totalIn + totalOut)}
+          </strong>
+          <span
+            data-testid="tu-breakdown"
+            className="text-xs text-muted-foreground"
+          >
+            ({fmtTokens(totalIn)} in
+            <span> · </span>
+            {fmtTokens(totalOut)} out
+            <span> · </span>
+            {totalCalls} {totalCalls === 1 ? "call" : "calls"})
+          </span>
         </div>
       </header>
 

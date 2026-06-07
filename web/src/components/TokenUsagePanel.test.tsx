@@ -30,6 +30,27 @@ describe("<TokenUsagePanel />", () => {
     expect(screen.getByText(/280/)).toBeInTheDocument();
   });
 
+  it("leads with the grand total (in+out) followed by the in/out breakdown", () => {
+    // The operator's primary question is "how much did this scan
+    // cost overall?" — surface the combined total first. The in/out
+    // split lives in the parenthesised breakdown.
+    const usage: TokenUsage = {
+      validate_request: { input: 200, output: 30, calls: 1 },
+      injection_review: { input: 5000, output: 250, calls: 3 },
+    };
+    render(<TokenUsagePanel usage={usage} />);
+    // 200+5000+30+250 = 5480 → "5.5k". The bare total must appear
+    // BEFORE the breakdown — DOM order matters because the value
+    // is what the operator scans first.
+    const total = screen.getByTestId("tu-total");
+    expect(total.textContent).toMatch(/5\.5k/);
+    // The breakdown appears in the same header but in a less
+    // prominent form.
+    const breakdown = screen.getByTestId("tu-breakdown");
+    expect(breakdown.textContent).toMatch(/5\.2k.*in/);
+    expect(breakdown.textContent).toMatch(/280.*out/);
+  });
+
   it("shows total call count summed across nodes", () => {
     const usage: TokenUsage = {
       a: { input: 1, output: 1, calls: 1 },
@@ -45,7 +66,11 @@ describe("<TokenUsagePanel />", () => {
         usage={{ a: { input: 100, output: 20, calls: 1 } }}
       />,
     );
-    expect(screen.getByText(/1 call$/)).toBeInTheDocument();
+    // The breakdown reads "(... · 1 call)" with the closing paren —
+    // assert on the singular form (and explicitly NOT the plural).
+    const breakdown = screen.getByTestId("tu-breakdown");
+    expect(breakdown.textContent).toMatch(/1 call\)/);
+    expect(breakdown.textContent).not.toMatch(/1 calls/);
   });
 
   it("renders a per-node row for every key in usage", () => {
