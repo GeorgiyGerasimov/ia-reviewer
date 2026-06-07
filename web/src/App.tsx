@@ -17,6 +17,7 @@ import { CriticalFindingsPanel } from "./components/CriticalFindingsPanel";
 import { PastReviewsList } from "./components/PastReviewsList";
 import { ReportPanel } from "./components/ReportPanel";
 import { ReviewForm } from "./components/ReviewForm";
+import { ThemeToggle } from "./components/ThemeToggle";
 import { TokenUsagePanel } from "./components/TokenUsagePanel";
 import { WorkflowDiagram } from "./components/WorkflowDiagram";
 import { useActiveReviews } from "./lib/useActiveReviews";
@@ -123,8 +124,26 @@ export function App() {
   );
 
   return (
-    <main className="grid grid-cols-1 md:grid-cols-[260px_1fr] gap-6">
-      <aside className="flex flex-col gap-6">
+    <>
+      <header className="flex items-center gap-4 mb-6">
+        <img
+          src="/img.png"
+          alt=""
+          aria-hidden
+          className="w-[72px] h-auto shrink-0"
+        />
+        <div className="flex-1">
+          <h1 className="text-2xl font-semibold m-0">ia-reviewer</h1>
+          <p className="text-sm text-muted-foreground m-0 mt-0.5">
+            Multi-agent security review for GitHub — PR diff or whole-repo
+            snapshot.
+          </p>
+        </div>
+        <ThemeToggle />
+      </header>
+
+      <main className="grid grid-cols-1 md:grid-cols-[260px_1fr] gap-6">
+        <aside className="flex flex-col gap-6">
         <WorkflowDiagram
           nodeStatuses={stream.nodeStatuses}
           validationAccepted={stream.validationAccepted}
@@ -162,7 +181,8 @@ export function App() {
           markdown={review?.report_markdown ?? ""}
           loading={reviewLoading}
         />
-      </section>
-    </main>
+        </section>
+      </main>
+    </>
   );
 }
