@@ -59,7 +59,17 @@ export function CriticalFindingsPanel({
         systems or for destructive purposes.
       </div>
 
-      <ul className="list-none p-0 m-0 flex flex-col gap-2">
+      {/* Bounded scroll container — real reports easily hit 40+
+          critical findings on a midsize repo. Letting the list
+          expand to natural height pushed the report panel + token
+          usage off-screen. The ceiling (~360px) fits ~3 typical
+          headline rows; the rest is one scroll away inside the
+          panel. `pr-1` reserves room for the scrollbar so it
+          doesn't crowd the action buttons. */}
+      <ul
+        data-testid="cf-list"
+        className="list-none p-0 m-0 flex flex-col gap-2 max-h-[360px] overflow-y-auto pr-1"
+      >
         {findings.map((f) => (
           <li key={f.finding_id}>
             <CriticalFindingRow

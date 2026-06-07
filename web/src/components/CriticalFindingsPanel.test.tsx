@@ -43,6 +43,34 @@ describe("<CriticalFindingsPanel />", () => {
     expect(container.firstChild).toBeNull();
   });
 
+  it("renders the findings list as a bounded scroll container", () => {
+    // Real reports hit 48+ critical findings on a midsize repo —
+    // letting the list expand to fit pushes the rest of the page
+    // off-screen. The list must have a max-height + overflow-y
+    // so ~3 rows are visible and the rest are accessible via scroll
+    // inside the panel.
+    const many = Array.from({ length: 10 }, (_, i) =>
+      finding({ finding_id: `fid-${i}`, file: `src/f${i}.py` }),
+    );
+    render(
+      <CriticalFindingsPanel
+        findings={many}
+        creating={new Set()}
+        capReached={false}
+        onCreate={vi.fn()}
+      />,
+    );
+    const list = screen.getByTestId("cf-list");
+    // Classes pinned so a future CSS revamp doesn't quietly drop
+    // the scroll behavior. The exact px ceiling lives in the
+    // component; assert on the structural Tailwind tokens.
+    expect(list.className).toMatch(/max-h-/);
+    expect(list.className).toMatch(/overflow-y-auto/);
+    // All findings are still in the DOM — only the viewport is
+    // bounded; scrolling reveals the rest.
+    expect(list.children).toHaveLength(10);
+  });
+
   it("renders the defensive-use disclaimer banner above the rows", () => {
     render(
       <CriticalFindingsPanel
