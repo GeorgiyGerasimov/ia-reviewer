@@ -228,8 +228,14 @@ def _register_routes(app: FastAPI) -> None:
         # Map finding_id → existing ExploitProposal payload (whatever
         # status it landed at). The UI cares about the last-known state,
         # not the full history.
+        #
+        # Defensive normalize: a buggy older write path stored some
+        # entries as JSON-strings instead of dicts (double JSON encode).
+        # Decode them on the fly so the endpoint stays callable until
+        # the corrupted rows are overwritten by fresh saves.
         proposals_by_id = {
-            p.get("finding_id"): p for p in (row.get("exploit_proposals") or [])
+            p.get("finding_id"): p
+            for p in _decode_exploit_proposals(row.get("exploit_proposals"))
         }
         from src.agents.exploit_proposal import compute_finding_id
 
@@ -290,9 +296,12 @@ def _register_routes(app: FastAPI) -> None:
         if row is None:
             raise HTTPException(status_code=404, detail="review not found")
 
+        # Defensive decode — same rationale as `list_critical_findings`.
+        existing_proposals = _decode_exploit_proposals(row.get("exploit_proposals"))
+
         # Idempotency — same finding_id was already processed. Return the
         # existing record verbatim. No LLM call, no second persist.
-        for p in row.get("exploit_proposals") or []:
+        for p in existing_proposals:
             if p.get("finding_id") == finding_id:
                 return JSONResponse(jsonable_encoder(p), status_code=200)
 
@@ -301,7 +310,7 @@ def _register_routes(app: FastAPI) -> None:
         # LLM budget. The idempotency check above runs first so an
         # already-created finding can still be fetched after the cap
         # locked the rest.
-        if len(row.get("exploit_proposals") or []) >= MAX_EXPLOIT_PROPOSALS:
+        if len(existing_proposals) >= MAX_EXPLOIT_PROPOSALS:
             raise HTTPException(
                 status_code=409,
                 detail=(
@@ -561,6 +570,62 @@ def _register_routes(app: FastAPI) -> None:
                     asyncio.create_task(_resume_review(app_ref, thread_id, text))
         except WebSocketDisconnect:
             await hub.disconnect(thread_id, websocket)
+
+
+def _decode_exploit_proposals(raw) -> list[dict]:
+    """Normalise the `reviews.exploit_proposals` JSONB column to a clean
+    `list[dict]` for endpoint consumption.
+
+    Historically a buggy `add_exploit_proposal` write path passed an
+    already-JSON-encoded string to asyncpg whose registered JSONB codec
+    then ran `json.dumps` AGAIN, storing a double-encoded value. The
+    corrupted shape that landed in real production rows is:
+
+        exploit_proposals = [ '[{"finding_id": "...", ...}]',  <real-dict>, ... ]
+
+    where the FIRST element is a JSON-string of a JSON-array of dicts.
+    This walks both that shape and any single/double-nested string-of-
+    string-of-dict shape, unwrapping each layer until it bottoms out
+    at a dict, then flattens the result so the caller gets a clean
+    `list[dict]`.
+
+    Returns `[]` on any decode failure so the endpoint stays callable
+    against corrupted rows; broken entries are simply invisible until
+    they get overwritten by fresh saves.
+    """
+    import json as _json
+
+    def _unwrap(value):
+        """Strip up to 3 layers of accidental double-encoding. Returns
+        a dict, a list, or None when nothing salvageable."""
+        for _ in range(3):
+            if isinstance(value, (dict, list)):
+                return value
+            if isinstance(value, str):
+                try:
+                    value = _json.loads(value)
+                    continue
+                except (ValueError, TypeError):
+                    return None
+            return None
+        return value if isinstance(value, (dict, list)) else None
+
+    unwrapped = _unwrap(raw)
+    if not isinstance(unwrapped, list):
+        return []
+    out: list[dict] = []
+    for item in unwrapped:
+        decoded = _unwrap(item)
+        if isinstance(decoded, dict):
+            out.append(decoded)
+        elif isinstance(decoded, list):
+            # Nested array (e.g. corrupted row where the whole proposal
+            # was wrapped in an outer array): flatten one level.
+            for sub in decoded:
+                sub_decoded = _unwrap(sub)
+                if isinstance(sub_decoded, dict):
+                    out.append(sub_decoded)
+    return out
 
 
 def _write_exploit_artifact(reports_dir: Path, thread_id: str, proposal) -> None:

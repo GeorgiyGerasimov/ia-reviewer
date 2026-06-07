@@ -162,6 +162,63 @@ async def test_critical_findings_carry_exploit_status_when_attempted(
     assert rows[0]["artifact"].startswith("curl -X POST")
 
 
+async def test_critical_findings_survives_corrupted_jsonb_rows(
+    http_client, app, mocker
+):
+    """Defensive: a buggy older write path stored some exploit_proposals
+    entries as double-JSON-encoded strings. The endpoint must not 500
+    on those — it should decode what it can and serve the row.
+
+    Reproduces the 2026-06-07 incident where /critical-findings 500'd
+    with `AttributeError: 'str' object has no attribute 'get'`.
+    """
+    import json
+
+    crit_finding = {
+        "role": "injection",
+        "file": "src/auth.py",
+        "line": 42,
+        "severity": "critical",
+        "issue": "SQL injection",
+    }
+    fid = compute_finding_id("injection", crit_finding)
+
+    # Real-world corrupted shape: the production row had a nested
+    # string-of-array-of-dict — i.e. the entry is a JSON string whose
+    # value is itself a JSON array `[{...}]`. The decoder must unwrap
+    # both layers.
+    nested_payload = json.dumps([
+        {
+            "finding_id": fid,
+            "role": "injection",
+            "severity": "critical",
+            "status": "approved",
+            "proposal_text": "stale",
+            "artifact": "x",
+            "confidence": 7,
+        }
+    ])
+
+    fake_store = mocker.AsyncMock()
+    fake_store.get_review = mocker.AsyncMock(
+        return_value={
+            "thread_id": "tid-corrupt",
+            "findings": [crit_finding],
+            "exploit_proposals": [nested_payload],
+        }
+    )
+    app.state.review_store = fake_store
+
+    response = await http_client.get("/reviews/tid-corrupt/critical-findings")
+
+    assert response.status_code == 200
+    rows = response.json()
+    # The corrupted entry was decoded → status surfaces correctly.
+    assert len(rows) == 1
+    assert rows[0]["exploit_status"] == "approved"
+    assert rows[0]["confidence"] == 7
+
+
 async def test_critical_findings_proposal_fields_absent_when_not_attempted(
     http_client, app, mocker
 ):

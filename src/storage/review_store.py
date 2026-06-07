@@ -208,15 +208,23 @@ class ReviewStore:
 
         No-op when `thread_id` is empty — same defensive policy as
         `save_review`.
+
+        Pass `[proposal]` as a Python list (NOT a json.dumps'd string).
+        `ReviewStore.create` registers a JSONB codec on the pool with
+        `encoder=json.dumps` — so the codec will serialise the list
+        for us. Pre-serialising here causes DOUBLE encoding: the column
+        would store the JSON-string-of-a-JSON-array, and on read the
+        decoder would yield a Python `str`, breaking every reader that
+        iterates `for p in exploit_proposals` (`'str' has no .get()`).
         """
         if not thread_id:
             logger.warning("review_store: skipping add_exploit_proposal — thread_id is empty")
             return
         # JSONB || JSONB demands an array on both sides — wrap the single
-        # proposal in a list so the concat appends one element.
-        payload = json.dumps([proposal])
+        # proposal in a list so the concat appends one element. The
+        # codec serialises it to JSONB on the wire.
         async with self.pool.acquire() as conn:
-            await conn.execute(_APPEND_EXPLOIT_SQL, thread_id, payload)
+            await conn.execute(_APPEND_EXPLOIT_SQL, thread_id, [proposal])
 
     async def list_reviews(self, *, limit: int = 50, offset: int = 0) -> list[dict]:
         async with self.pool.acquire() as conn:
