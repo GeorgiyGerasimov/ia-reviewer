@@ -173,9 +173,11 @@ panels are migrating from `templates/index.html` piece by piece:
 | API client        | ✅     | `src/api/{types,client}.ts` — typed wrappers + APIError; 19 tests |
 | WebSocket hook    | ✅     | `src/lib/useReviewStream.ts` — per-node status + validator verdict + chat messages from `/ws/chat/{tid}`; 14 tests via `MockWebSocket` |
 | WorkflowDiagram   | ✅     | Left-rail step indicators (pure props; parent wires hook); 9 tests |
-| ActiveReviews     | TODO   | Sidebar list with live token counter           |
+| `useActiveReviews` | ✅    | 5s-polling hook around GET /reviews/active; 5 tests |
+| ActiveReviewsList | ✅     | Sidebar with select / stop / live token line; 8 tests |
+| ReviewForm        | ✅     | PR/repo URL submit, auto-detects mode from `/pull/N`; 8 tests |
+| Wired App page    | ✅     | First integrated React page (form → submit → workflow tracks the new thread); 3 smoke tests |
 | PastReviews       | TODO   | Sidebar list, GET /reviews                     |
-| ReviewForm        | TODO   | PR/repo URL submit                             |
 | CriticalFindings  | TODO   | Exploit-PoC creation panel                     |
 | TokenUsagePanel   | TODO   | Per-node LLM accounting in the report view     |
 | ReportPanel       | TODO   | Markdown report viewer + WebSocket stream      |
