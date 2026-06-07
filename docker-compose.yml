@@ -50,8 +50,14 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    ports:
-      - "8000:8000"
+    # No host port mapping in production: the backend is reachable
+    # only from the `web` service (nginx) over the compose network.
+    # If you need direct access for debugging (e.g. curl /reviews
+    # from the host), add a port mapping in your own override file
+    # — DO NOT expose 8000 here, it would race with the `web`
+    # service on the same port.
+    expose:
+      - "8000"
     env_file:
       - path: .env
         required: false
@@ -77,6 +83,43 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ── Frontend (React SPA + reverse proxy) ─────────────────────────────────
+  # Builds the Vite bundle inside a `node:22-alpine` stage and serves
+  # it via `nginx:alpine`. Nginx ALSO proxies `/health`, `/review`,
+  # `/reviews/*`, `/reports/*`, `/chat/*`, `/img.png`, and `/ws/*` to
+  # the `app` service over the compose network — see `web/nginx.conf`
+  # for the exact map.
+  #
+  # User-facing URL is unchanged: `http://localhost:${IA_PORT:-8000}`
+  # opens the SPA. The backend's host port mapping has been removed
+  # (only `expose: 8000` to other compose services), so this is the
+  # single entry point.
+  web:
+    build:
+      context: .
+      dockerfile: web/Dockerfile
+    image: ia-reviewer-web:latest
+    container_name: ia-reviewer-web
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    ports:
+      - "${IA_PORT:-8000}:80"
+    healthcheck:
+      # Proxies through to the backend's /health endpoint, so this
+      # also tests the upstream link.
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--timeout=3", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
     logging:
       driver: json-file
       options:

@@ -1432,13 +1432,19 @@ def _build_app() -> FastAPI:
                 await github.aclose()
 
     app = FastAPI(title="ia-reviewer", version="0.1.0", lifespan=lifespan)
-    # Auto-detect the Vite-built SPA bundle. The Docker build's
-    # `web-builder` stage emits the bundle into `/app/web/dist/`;
-    # `_register_routes` switches to serving it when `index.html` is
-    # present. A fresh checkout without `npm run build` simply has no
-    # such directory and the legacy Jinja shell stays in play —
-    # operators don't need to touch anything to run the project.
-    app.state.web_dist = Path(__file__).parent / "web" / "dist"
+    # Backend image ships zero frontend assets — the React SPA is a
+    # separate `web/Dockerfile` (nginx) container, deployed alongside
+    # this one in docker-compose. The two services talk strictly over
+    # HTTP, no shared volumes, no source-level coupling. `GET /` on
+    # the backend serves the legacy Jinja template as a debug
+    # fallback for `uvicorn main:app` bare-metal runs; in production
+    # nginx terminates `/` and this branch is never reached.
+    #
+    # `_register_routes` keeps the React-shell branch behind an
+    # opt-in `app.state.web_dist` so tests can still exercise it
+    # via `create_test_app(web_dist=tmp_path)` — see
+    # tests/integration/test_serve_web_dist.py.
+    app.state.web_dist = None
     _register_routes(app)
     return app
 

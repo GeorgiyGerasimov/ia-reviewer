@@ -140,26 +140,34 @@ npm run build
 
 ## Production serving
 
-The project's `Dockerfile` is multi-stage:
+The frontend ships as a **dedicated `nginx:alpine` image**, built by
+`web/Dockerfile`, completely independent of the backend image:
 
-1. `py-builder` — installs Python deps.
-2. `web-builder` (this subproject) — runs `npm ci && npm run build`
-   inside `node:22-alpine`. Output lands at `/web/dist/`.
-3. `runtime` — `python:3.11-slim` carrying the Python deps + app
-   code + the SPA bundle COPY'd from `web-builder` into
-   `/app/web/dist/`. No Node, no npm, no source-only files.
+1. `builder` stage — `node:22-alpine` runs `npm ci && npm run build`.
+2. `runtime` stage — `nginx:alpine` with the built SPA in
+   `/usr/share/nginx/html` and `web/nginx.conf` baked into
+   `/etc/nginx/conf.d/default.conf`.
 
-`main.py::_register_routes` auto-detects the bundle:
+Final web image: ~93 MB. No Node, no `node_modules`, no source —
+just hashed Vite output + nginx.
 
-- `/app/web/dist/index.html` present → mounts `/assets/*` as static
-  (StaticFiles), routes `GET /` to the React shell, and falls
-  through to FastAPI for everything else (JSON API, WS, /reports/).
-- Bundle missing → keeps the legacy Jinja template at `GET /`. This
-  is what happens on a fresh checkout running `uvicorn main:app`
-  directly without `docker compose build` or local `npm run build`.
+nginx has two jobs:
 
-Net effect: `docker compose up --build` is the single command to
-ship the React UI. Operators never have to run npm themselves.
+- Serve the SPA from the doc-root with a `try_files` fallback so
+  client-side routes (if/when we add them) hit `index.html` and
+  React Router takes over.
+- Reverse-proxy `/health`, `/review`, `/reviews/*`, `/reports/*`,
+  `/chat/*`, `/img.png`, and `/ws/*` to the `app` (backend)
+  container over the docker-compose network.
+
+The backend image (`../Dockerfile`) ships zero frontend assets and
+has zero knowledge of this subproject. The contract between them
+is HTTP only. See `web/nginx.conf` — that file is the single
+source of truth for which routes go where.
+
+Compose maps host port `${IA_PORT:-8000}:80` to the `web` service.
+Backend is `expose:`-only (internal). `docker compose up --build`
+ships both images — operators never run `npm` locally.
 
 For local dev with HMR (Vite dev server, no Docker):
 
