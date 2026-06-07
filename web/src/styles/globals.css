@@ -1,111 +1,162 @@
 @import "tailwindcss";
+@import "tw-animate-css";
 
-/* Bridge our `[data-theme="dark"]` attribute (set by index.html's boot
-   script before stylesheet parsing) to Tailwind's `dark:` variant.
-   Without this, `dark:bg-bg` only fires under the default `.dark`
-   class. The selector targets the element itself AND any descendant
-   so the variant works at any depth in the tree. */
+/* Bridge our `[data-theme="dark"]` attribute (set by index.html's
+   boot script BEFORE stylesheet parsing — no FOUC) to Tailwind's
+   `dark:` variant. Without this, `dark:bg-card` only fires under
+   the default `.dark` class. The selector targets the element
+   itself AND any descendant so the variant works at any depth. */
 @custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
 
-/* Runtime CSS variables — light mode (default). Carry the actual
-   color values; the boot script flips `data-theme="dark"` on <html>
-   and the override block below swaps them. */
+/* ── shadcn / Radix design tokens ─────────────────────────────────
+   shadcn components reference these names directly
+   (`bg-background`, `text-foreground`, `bg-primary`, …). We carry
+   the canonical token vocabulary so future `npx shadcn add …` calls
+   drop in components that look right against our palette without
+   bespoke patches. The values come from our previous palette
+   (GitHub Primer-adjacent blue, slight off-white background) so
+   visual continuity is preserved.
+
+   Domain-specific tokens (severity colors, notice banner, done /
+   skipped / rejected workflow states) live alongside as extra
+   variables that shadcn doesn't define. */
 :root {
-  --bg: #f6f8fa;
-  --surface: #ffffff;
-  --surface-hover: #fdfdfe;
-  --surface-selected: #f0f7ff;
-  --code-bg: #f6f8fa;
+  /* Surface + ink */
+  --background: #f6f8fa;
+  --foreground: #1f2328;
+  --card: #ffffff;
+  --card-foreground: #1f2328;
+  --popover: #ffffff;
+  --popover-foreground: #1f2328;
+  --muted: #f6f8fa;
+  --muted-foreground: #656d76;
   --border: #d0d7de;
-  --text: #1f2328;
-  --muted: #656d76;
-  --accent: #1f6feb;
-  --accent-dark: #1856b9;
-  --accent-tint: rgba(31, 111, 235, 0.08);
+  --input: #d0d7de;
+
+  /* Brand */
+  --primary: #1f6feb;
+  --primary-foreground: #ffffff;
+  --secondary: #f6f8fa;
+  --secondary-foreground: #1f2328;
+  --accent: #f0f7ff;
+  --accent-foreground: #1f2328;
+  --ring: #1f6feb;
+
+  /* Destructive (errors, rejected reviews) */
+  --destructive: #cf222e;
+  --destructive-foreground: #ffffff;
+
+  /* Domain extras — our workflow + finding semantics */
   --done: #2da44e;
   --skipped: #6e7781;
-  --rejected: #cf222e;
-  --error: #cf222e;
   --severity-minor: #d4a72c;
   --severity-major: #fb8500;
+  --severity-critical: #cf222e;
   --notice-bg: #fff8e6;
   --notice-border: #ffd33d99;
   --notice-text: #6e4f00;
-  --on-accent: #ffffff;
+
+  /* Geometry */
+  --radius: 0.5rem;
+
   color-scheme: light;
 }
 
 [data-theme="dark"] {
-  --bg: #0d1117;
-  --surface: #161b22;
-  --surface-hover: #1c2128;
-  --surface-selected: #1f2733;
-  --code-bg: #0d1117;
+  --background: #0d1117;
+  --foreground: #c9d1d9;
+  --card: #161b22;
+  --card-foreground: #c9d1d9;
+  --popover: #161b22;
+  --popover-foreground: #c9d1d9;
+  --muted: #1c2128;
+  --muted-foreground: #8b949e;
   --border: #30363d;
-  --text: #c9d1d9;
-  --muted: #8b949e;
-  --accent: #58a6ff;
-  --accent-dark: #3081e3;
-  --accent-tint: rgba(88, 166, 255, 0.12);
+  --input: #30363d;
+
+  --primary: #58a6ff;
+  --primary-foreground: #0d1117;
+  --secondary: #1c2128;
+  --secondary-foreground: #c9d1d9;
+  --accent: #1f2733;
+  --accent-foreground: #c9d1d9;
+  --ring: #58a6ff;
+
+  --destructive: #f85149;
+  --destructive-foreground: #ffffff;
+
   --done: #2ea043;
   --skipped: #6e7781;
-  --rejected: #f85149;
-  --error: #f85149;
   --severity-minor: #d29922;
   --severity-major: #db6d28;
+  --severity-critical: #f85149;
   --notice-bg: #2c2410;
   --notice-border: #7a5d10;
   --notice-text: #e3b341;
-  --on-accent: #ffffff;
+
   color-scheme: dark;
 }
 
-/* Expose our runtime variables to Tailwind's utility generator.
-   `@theme inline` registers them WITHOUT freezing — they keep
-   reading from :root / [data-theme="dark"] at runtime, so dark mode
-   flips reactively. Each `--color-foo` here generates the matching
-   `bg-foo`, `text-foo`, `border-foo`, ... utility classes. */
+/* Expose the runtime variables to Tailwind's utility generator via
+   `@theme inline` — utilities like `bg-card`, `text-muted-foreground`,
+   `border-border`, `text-severity-critical` all read `var(--X)` at
+   runtime, so dark-mode flips remain reactive (no class swap on
+   individual components). */
 @theme inline {
-  --color-bg: var(--bg);
-  --color-surface: var(--surface);
-  --color-surface-hover: var(--surface-hover);
-  --color-surface-selected: var(--surface-selected);
-  --color-code-bg: var(--code-bg);
-  --color-border: var(--border);
-  --color-text: var(--text);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
   --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
   --color-accent: var(--accent);
-  --color-accent-dark: var(--accent-dark);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-ring: var(--ring);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+
+  /* Domain extras — same naming → utility convention. */
   --color-done: var(--done);
   --color-skipped: var(--skipped);
-  --color-rejected: var(--rejected);
-  --color-error: var(--error);
   --color-severity-minor: var(--severity-minor);
   --color-severity-major: var(--severity-major);
+  --color-severity-critical: var(--severity-critical);
   --color-notice-bg: var(--notice-bg);
   --color-notice-border: var(--notice-border);
   --color-notice-text: var(--notice-text);
-  --color-on-accent: var(--on-accent);
+
+  --radius-sm: calc(var(--radius) * 0.5);
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) * 1.5);
 }
 
-/* Document baseline — kept minimal. Component-specific styles use
-   Tailwind utilities. */
-body {
-  font-family:
-    -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
-    sans-serif;
-  max-width: 1180px;
-  margin: 2rem auto;
-  padding: 0 1rem;
-  color: var(--text);
-  background: var(--bg);
-  transition:
-    background 0.18s ease,
-    color 0.18s ease;
-}
-
-* {
-  box-sizing: border-box;
+/* Document baseline — tokens above + component-level utilities
+   handle everything else. */
+@layer base {
+  * {
+    @apply border-border;
+    box-sizing: border-box;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family:
+      -apple-system,
+      BlinkMacSystemFont,
+      "Segoe UI",
+      sans-serif;
+    max-width: 1180px;
+    margin: 2rem auto;
+    padding: 0 1rem;
+    transition:
+      background 0.18s ease,
+      color 0.18s ease;
+  }
 }
