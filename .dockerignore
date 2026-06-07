@@ -12,6 +12,10 @@ __pycache__
 .env
 .env.local
 *.egg-info
+# Note: `dist` here matches the top-level `dist/` (Python sdist
+# artifact). The Vite output `web/dist/` is built INSIDE the
+# Dockerfile's `web-builder` stage, so it's never copied from
+# the host — excluding the literal directory below is fine.
 dist
 build
 tests
@@ -26,3 +30,11 @@ Dockerfile
 .dockerignore
 reports
 snapshots
+
+# Frontend: ignore the heavy + reproducible parts (node_modules is
+# reinstalled via `npm ci` inside the web-builder stage; web/dist is
+# built inside that stage). EVERYTHING ELSE under web/ — source,
+# configs, lockfile — IS shipped to the builder context.
+web/node_modules
+web/dist
+web/coverage

@@ -134,8 +134,20 @@ See [`docs/ui.md`](docs/ui.md) for the workflow colour codes.
 
 ```bash
 cp .env.example .env
-docker compose up -d   # app + postgres + langfuse-web + langfuse-worker + clickhouse + redis + minio
+docker compose up -d --build   # app + postgres + langfuse-web + langfuse-worker + clickhouse + redis + minio
 ```
+
+The `--build` flag triggers the multi-stage `Dockerfile`:
+
+1. `py-builder` — installs Python deps.
+2. `web-builder` (`node:22-alpine`) — runs `npm ci && npm run build`
+   inside the image. **No local Node toolchain required.**
+3. `runtime` — minimal `python:3.11-slim` carrying the Python deps
+   + app code + the built React SPA at `/app/web/dist/`.
+
+The shipped image has no `npm`, no `node_modules`, no `web/src/` —
+just the hashed Vite output that FastAPI mounts. To rebuild after
+pulling new commits: `docker compose up -d --build app`.
 
 Open <http://localhost:8000> for the review UI and <http://localhost:3000>
 for Langfuse traces (login `dev@local.dev` / `localdev123!`, self-seeded on
