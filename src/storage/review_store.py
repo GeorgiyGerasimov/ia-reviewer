@@ -31,8 +31,8 @@ INSERT INTO reviews (
     thread_id, mode, target_url, ref, author,
     validation_category, validation_accepted,
     overall_severity, finding_count,
-    report_markdown, completed_at, exploit_proposals
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+    report_markdown, completed_at, exploit_proposals, token_usage
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 ON CONFLICT (thread_id) DO UPDATE SET
     mode = EXCLUDED.mode,
     target_url = EXCLUDED.target_url,
@@ -44,7 +44,8 @@ ON CONFLICT (thread_id) DO UPDATE SET
     finding_count = EXCLUDED.finding_count,
     report_markdown = EXCLUDED.report_markdown,
     completed_at = EXCLUDED.completed_at,
-    exploit_proposals = EXCLUDED.exploit_proposals
+    exploit_proposals = EXCLUDED.exploit_proposals,
+    token_usage = EXCLUDED.token_usage
 """
 
 _INSERT_FINDINGS_SQL = """
@@ -82,7 +83,7 @@ SELECT
     thread_id, mode, target_url, ref, author,
     validation_category, validation_accepted,
     overall_severity, finding_count,
-    report_markdown, exploit_proposals,
+    report_markdown, exploit_proposals, token_usage,
     created_at, completed_at
 FROM reviews
 WHERE thread_id = $1
@@ -197,6 +198,40 @@ class ReviewStore:
             state.thread_id,
             len(finding_rows),
         )
+
+    async def merge_token_usage_bucket(
+        self, thread_id: str, bucket_name: str, bucket_payload: dict,
+    ) -> None:
+        """Set `reviews.token_usage[bucket_name] = bucket_payload` on
+        the persisted row, creating the column path if missing.
+
+        Used by `POST /reviews/<tid>/exploits/<fid>` to fold the on-
+        demand PoC's LLM cost into the review's summary table so the
+        UI's "Token usage" panel reflects all spend, not just the
+        in-graph review pass.
+
+        No-op when `thread_id` is empty (same defensive policy as
+        `save_review`).
+        """
+        if not thread_id:
+            logger.warning("review_store: skipping merge_token_usage — empty thread_id")
+            return
+        sql = """
+            UPDATE reviews
+            SET token_usage = jsonb_set(
+                COALESCE(token_usage, '{}'::jsonb),
+                ARRAY[$2],
+                $3::jsonb,
+                true
+            )
+            WHERE thread_id = $1
+        """
+        # Pass the bucket as a Python dict — the registered JSONB codec
+        # serialises it. The bucket_name is a plain string used as a
+        # JSON path element, so a Python list of one string `[$2]` lands
+        # in Postgres as `ARRAY[$2]` correctly.
+        async with self.pool.acquire() as conn:
+            await conn.execute(sql, thread_id, bucket_name, bucket_payload)
 
     async def add_exploit_proposal(self, thread_id: str, proposal: dict) -> None:
         """Append a single ExploitProposal payload to the reviews row's
@@ -334,6 +369,7 @@ def _review_row(state: ReviewState) -> tuple:
         state.final_report or "",                # $10
         None,                                    # $11 completed_at — let app or DB stamp
         _exploit_proposals_json(state),          # $12 JSONB
+        dict(state.token_usage or {}),           # $13 JSONB (per-node LLM accounting)
     )
 
 

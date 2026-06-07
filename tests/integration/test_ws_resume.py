@@ -58,7 +58,10 @@ def test_ws_routes_user_text_as_resume_when_interrupt_pending(mocker, store):
     # langgraph.types.Command — duck-type: it has a `resume` attribute set.
     assert getattr(cmd, "resume", None) == "rerun: extra context"
     config = call.kwargs.get("config") or (call.args[1] if len(call.args) > 1 else None)
-    assert config == {"configurable": {"thread_id": "tid-resume"}}
+    assert config["configurable"] == {"thread_id": "tid-resume"}
+    # `callbacks` now always carries the per-request TokenUsageHandler
+    # (langfuse_callback is unset on this test app).
+    assert "callbacks" in config and len(config["callbacks"]) == 1
 
 
 def test_ws_broadcasts_normally_when_no_interrupt(mocker, store):

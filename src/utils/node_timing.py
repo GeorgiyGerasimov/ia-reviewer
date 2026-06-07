@@ -33,6 +33,7 @@ import time
 from collections.abc import Awaitable, Callable
 
 from src.utils.logger import get_logger
+from src.utils.token_tracking import _current_node, set_current_node
 
 logger = get_logger("graph.timing")
 
@@ -63,6 +64,11 @@ def timed_node(name: str) -> Callable[
         async def wrapper(state, *args, **kwargs):
             thread_id = _extract_thread_id(state)
             t0 = time.perf_counter()
+            # Tag the current-node ContextVar so `TokenUsageHandler` can
+            # attribute any LLM calls fired inside this node (including
+            # those spawned via `asyncio.gather` — Python copies the
+            # context into each child task) to the right bucket.
+            token = set_current_node(name)
             try:
                 result = await fn(state, *args, **kwargs)
             except BaseException as exc:
@@ -77,6 +83,7 @@ def timed_node(name: str) -> Callable[
                     duration_ms,
                     err_repr,
                 )
+                _current_node.reset(token)
                 raise
             duration_ms = _elapsed_ms(t0)
             logger.info(
@@ -85,6 +92,7 @@ def timed_node(name: str) -> Callable[
                 thread_id,
                 duration_ms,
             )
+            _current_node.reset(token)
             return result
 
         return wrapper

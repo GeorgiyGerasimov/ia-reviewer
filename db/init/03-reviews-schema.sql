@@ -31,6 +31,14 @@ CREATE TABLE IF NOT EXISTS reviews (
 ALTER TABLE reviews
     ADD COLUMN IF NOT EXISTS exploit_proposals JSONB NOT NULL DEFAULT '[]'::jsonb;
 
+-- Per-node LLM token-usage accounting. Populated by `main._run_review`
+-- after the graph completes from a `TokenUsageHandler` (LangChain
+-- CallbackHandler registered during `_trace_config`). Shape:
+--   {<node_name>: {input, output, calls, models}}
+-- Defaults to `{}` for backward compat with rows written pre-feature.
+ALTER TABLE reviews
+    ADD COLUMN IF NOT EXISTS token_usage JSONB NOT NULL DEFAULT '{}'::jsonb;
+
 CREATE TABLE IF NOT EXISTS review_findings (
     id           BIGSERIAL PRIMARY KEY,
     thread_id    UUID NOT NULL REFERENCES reviews(thread_id) ON DELETE CASCADE,

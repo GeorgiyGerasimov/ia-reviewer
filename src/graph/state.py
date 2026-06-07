@@ -171,3 +171,10 @@ class ReviewState:
     pr_comment_id: int | None = None
     error: str = ""
     completed: bool = False
+    # LLM token-usage accounting, segmented by graph-node name. Populated
+    # by `main._run_review` / `_run_repo_review` after `astream` finishes
+    # by draining the per-request `TokenUsageHandler` (a LangChain
+    # CallbackHandler registered on every graph invocation alongside the
+    # Langfuse callback). Shape: `{node_name: {input, output, calls, models}}`.
+    # Single writer (the orchestrator, post-stream) — no reducer needed.
+    token_usage: dict[str, dict] = field(default_factory=dict)

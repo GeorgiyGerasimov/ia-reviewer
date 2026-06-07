@@ -354,9 +354,30 @@ def _register_routes(app: FastAPI) -> None:
             "role": matching_role,
             "finding_id": finding_id,
         }
-        proposal = await agent.generate_exploit(
-            finding_for_agent, save_mode="file"
+        # Per-request token-usage handler — attaches to the agent's two
+        # LLM calls (draft + artifact) via the langchain RunnableConfig
+        # callbacks list. The ContextVar pins the bucket name so the
+        # accumulated usage lands under `exploit:<finding_id>` (unique
+        # per click) rather than the generic `_unknown`.
+        from src.utils.token_tracking import (
+            TokenUsageHandler,
+            _current_node,
+            set_current_node,
         )
+
+        token_handler = TokenUsageHandler()
+        bucket_name = f"exploit:{finding_id}"
+        cv_token = set_current_node(bucket_name)
+        try:
+            proposal = await agent.generate_exploit(
+                finding_for_agent, save_mode="file", callbacks=[token_handler],
+            )
+        finally:
+            _current_node.reset(cv_token)
+
+        exploit_tokens = token_handler.usage.get(bucket_name, {
+            "input": 0, "output": 0, "calls": 0, "models": [],
+        })
 
         # Persist + re-render. Failures here are logged but do NOT undo
         # the LLM call — we still return the proposal so the user can
@@ -369,6 +390,9 @@ def _register_routes(app: FastAPI) -> None:
             "proposal_text": proposal.proposal_text,
             "artifact": proposal.artifact,
             "confidence": proposal.confidence,
+            # Per-exploit token cost — surfaces in the UI's per-row
+            # details so the operator can see "this PoC cost N tokens".
+            "tokens": exploit_tokens,
         }
         try:
             await store.add_exploit_proposal(thread_id, proposal_dict)
@@ -377,6 +401,19 @@ def _register_routes(app: FastAPI) -> None:
                 "failed to persist exploit_proposal for %s/%s: %s",
                 thread_id, finding_id, exc,
             )
+        # Also fold the per-exploit usage into the review's top-level
+        # token_usage bucket so the report summary table reflects ALL
+        # costs (including post-publish on-demand PoCs).
+        if exploit_tokens["calls"] > 0:
+            try:
+                await store.merge_token_usage_bucket(
+                    thread_id, bucket_name, exploit_tokens,
+                )
+            except Exception as exc:
+                logger.error(
+                    "failed to update token_usage for %s/%s: %s",
+                    thread_id, finding_id, exc,
+                )
 
         # Write the sibling artifact file when the agent succeeded —
         # the UI's "View" link points at `/reports/<tid>.exploit.<fid>.md`.
@@ -697,27 +734,98 @@ def _ws_origin_is_allowed(origin: str) -> bool:
 
 
 def _trace_config(app: FastAPI, thread_id: str, state: ReviewState | None, trigger: str) -> dict:
-    """Build the LangGraph invocation config, attaching Langfuse tracing when
-    a CallbackHandler is wired on `app.state`.
+    """Build the LangGraph invocation config.
+
+    Attaches two callbacks:
+      * Langfuse tracing (when a CallbackHandler is wired on
+        `app.state.langfuse_callback`),
+      * a fresh `TokenUsageHandler` per request — the orchestrator drains
+        its accumulated usage into `state.token_usage` after the graph
+        completes (and after every `_resume_review` for the human-in-the-
+        loop path).
 
     The thread_id doubles as the Langfuse `session_id` so the chat-side
     interrupts/resumes appear under the same Langfuse session as the
-    initial review run.
+    initial review run. We stash the per-request token handler on
+    `app.state.token_handlers[thread_id]` so the orchestrator can read
+    it back from any of the three entry points (`/review` → run,
+    chat WS → resume, `/exploits/<fid>` → on-demand).
     """
+    from src.utils.token_tracking import TokenUsageHandler
+
     config: dict = {"configurable": {"thread_id": thread_id}}
-    handler = getattr(app.state, "langfuse_callback", None)
-    if handler is None:
-        return config
-    config["callbacks"] = [handler]
-    metadata: dict = {
-        "session_id": thread_id,
-        "tags": ["security-review", trigger],
-    }
-    if state is not None and state.request is not None:
-        metadata["user_id"] = state.request.author
-        metadata["pr_url"] = state.request.pr_url
-    config["metadata"] = metadata
+    callbacks: list = []
+
+    langfuse_handler = getattr(app.state, "langfuse_callback", None)
+    if langfuse_handler is not None:
+        callbacks.append(langfuse_handler)
+
+    # Per-request token-usage handler. Reuse an existing one on this
+    # thread_id when there is one (e.g. resume-after-interrupt) so the
+    # totals span the whole run instead of resetting per resume.
+    token_handlers = _get_token_handlers(app)
+    token_handler = token_handlers.get(thread_id)
+    if token_handler is None:
+        token_handler = TokenUsageHandler()
+        token_handlers[thread_id] = token_handler
+    callbacks.append(token_handler)
+
+    if callbacks:
+        config["callbacks"] = callbacks
+
+    if langfuse_handler is not None:
+        metadata: dict = {
+            "session_id": thread_id,
+            "tags": ["security-review", trigger],
+        }
+        if state is not None and state.request is not None:
+            metadata["user_id"] = state.request.author
+            metadata["pr_url"] = state.request.pr_url
+        config["metadata"] = metadata
     return config
+
+
+def _get_token_handlers(app: FastAPI) -> dict:
+    """Lazy-init the per-thread `TokenUsageHandler` registry. Tests can
+    construct an app without going through the lifespan, so we can't
+    assume the attribute already exists. We also defensively type-check
+    — on MagicMock `app.state` objects the attribute auto-creates as a
+    MagicMock, which would silently break get/setitem semantics."""
+    handlers = getattr(app.state, "token_handlers", None)
+    if not isinstance(handlers, dict):
+        handlers = {}
+        app.state.token_handlers = handlers
+    return handlers
+
+
+def _drain_token_usage(app: FastAPI, thread_id: str, state: ReviewState) -> None:
+    """Move accumulated LLM usage off the per-thread handler onto
+    `state.token_usage`, then drop the handler so a fresh per-thread
+    handler starts the next run clean. Called after every successful
+    graph drain (initial `_run_review` / `_run_repo_review` AND after
+    each `_resume_review` pass)."""
+    handlers = _get_token_handlers(app)
+    handler = handlers.pop(thread_id, None)
+    if handler is None:
+        return
+    # Merge into whatever is already on the state (resume paths land
+    # here after the initial drain has already populated state).
+    merged = dict(state.token_usage or {})
+    for node, bucket in handler.usage.items():
+        existing = merged.get(node)
+        if existing is None:
+            merged[node] = dict(bucket)
+            merged[node]["models"] = list(bucket.get("models") or [])
+            continue
+        existing["input"] = (existing.get("input") or 0) + bucket.get("input", 0)
+        existing["output"] = (existing.get("output") or 0) + bucket.get("output", 0)
+        existing["calls"] = (existing.get("calls") or 0) + bucket.get("calls", 0)
+        models = list(existing.get("models") or [])
+        for m in bucket.get("models") or []:
+            if m not in models:
+                models.append(m)
+        existing["models"] = models
+    state.token_usage = merged
 
 
 async def _run_review(app: FastAPI, pr_url: str, scope: list[str], thread_id: str) -> None:
@@ -750,6 +858,11 @@ async def _run_review(app: FastAPI, pr_url: str, scope: list[str], thread_id: st
         config = _trace_config(app, thread_id, state, trigger="http")
         await _stream_graph_with_progress(app, thread_id, state, config)
         await _broadcast_pending_interrupts(app, thread_id)
+        # Move accumulated LLM token usage off the per-thread handler
+        # onto `state.token_usage` BEFORE persisting — the DB row needs
+        # it. The handler is also dropped here so a long-running app
+        # doesn't accumulate orphaned handlers across thread_ids.
+        _drain_token_usage(app, thread_id, state)
         await _persist_review(app, state)
     except asyncio.CancelledError:
         logger.info("review %s cancelled by user", thread_id)
@@ -827,6 +940,7 @@ async def _run_repo_review(
             await _stream_graph_with_progress(app, thread_id, state, config)
         await _broadcast_pending_interrupts(app, thread_id)
         await _broadcast_repo_completion(app, thread_id)
+        _drain_token_usage(app, thread_id, state)
         await _persist_review(app, state)
     except asyncio.CancelledError:
         logger.info("repo review %s cancelled by user", thread_id)
@@ -1100,6 +1214,11 @@ async def _persist_state_from_checkpointer(app: FastAPI, thread_id: str) -> None
     # `values` is a dict view of the dataclass state — reconstruct as
     # ReviewState so the helpers in ReviewStore see the expected shape.
     reconstructed = ReviewState(**values) if isinstance(values, dict) else values
+    # Fold in any LLM usage accumulated during the resume into the
+    # reconstructed state's token_usage before persisting (the per-thread
+    # TokenUsageHandler survives across the initial run and every resume
+    # so the totals are cumulative, not per-pass).
+    _drain_token_usage(app, thread_id, reconstructed)
     await _persist_review(app, reconstructed)
 
 

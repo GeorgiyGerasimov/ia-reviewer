@@ -9,6 +9,7 @@ import pytest
 
 from main import _resume_review, _run_review, _trace_config, create_test_app
 from src.graph.state import ReviewRequest, ReviewState
+from src.utils.token_tracking import TokenUsageHandler
 
 
 def _state() -> ReviewState:
@@ -25,11 +26,15 @@ def _state() -> ReviewState:
 # ── _trace_config helper ─────────────────────────────────────────────────────
 
 
-def test_trace_config_omits_callbacks_when_no_handler(mocker):
+def test_trace_config_attaches_token_handler_even_without_langfuse(mocker):
+    """The TokenUsageHandler is unconditional — token accounting works
+    whether Langfuse is wired or not. Pin: a `callbacks` list with at
+    least one entry, and that entry is a TokenUsageHandler."""
     app = create_test_app(graph=mocker.AsyncMock(), github=mocker.AsyncMock(), langfuse_callback=None)
     config = _trace_config(app, "tid-1", _state(), trigger="http")
     assert config["configurable"]["thread_id"] == "tid-1"
-    assert "callbacks" not in config
+    callbacks = config["callbacks"]
+    assert any(isinstance(cb, TokenUsageHandler) for cb in callbacks)
 
 
 def test_trace_config_includes_handler_and_metadata(mocker):
@@ -41,7 +46,10 @@ def test_trace_config_includes_handler_and_metadata(mocker):
     )
     config = _trace_config(app, "tid-2", _state(), trigger="http")
 
-    assert config["callbacks"] == [handler]
+    # Both the Langfuse handler AND the TokenUsageHandler are registered.
+    callbacks = config["callbacks"]
+    assert handler in callbacks
+    assert any(isinstance(cb, TokenUsageHandler) for cb in callbacks)
     metadata = config["metadata"]
     assert metadata["session_id"] == "tid-2"
     assert metadata["user_id"] == "dev"
@@ -90,7 +98,9 @@ async def test_run_review_passes_tracing_to_graph_ainvoke(traced_app):
 
     assert len(captured) == 1
     config = captured[0]
-    assert config["callbacks"] == [handler]
+    # Langfuse handler always rides along; TokenUsageHandler joins.
+    assert handler in config["callbacks"]
+    assert any(isinstance(cb, TokenUsageHandler) for cb in config["callbacks"])
     assert config["metadata"]["pr_url"] == "https://github.com/o/r/pull/7"
     assert "http" in config["metadata"]["tags"]
 
@@ -107,5 +117,6 @@ async def test_resume_review_passes_tracing_to_graph_ainvoke(traced_app):
 
     app.state.graph.ainvoke.assert_awaited_once()
     config = app.state.graph.ainvoke.await_args.kwargs["config"]
-    assert config["callbacks"] == [handler]
+    assert handler in config["callbacks"]
+    assert any(isinstance(cb, TokenUsageHandler) for cb in config["callbacks"])
     assert "resume" in config["metadata"]["tags"]
