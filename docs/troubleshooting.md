@@ -96,12 +96,12 @@ your LLM. Open `templates/index.html`, find the `delays` array in
 DevTools → Network and manually `GET /reports/<tid>.md` to see the
 content.
 
-## All three reviewers return `status:"empty"`
+## All four reviewers return `status:"empty"`
 
 Scope filtering. If `scope` excludes a reviewer's role
-(e.g. `scope=["dependency"]` excludes injection + owasp), those
-reviewers' `run` method exits immediately via `_skip_for_scope` and
-returns `{}`. `_classify_progress` maps an empty update to `empty`,
+(e.g. `scope=["dependency"]` excludes injection + owasp + configuration),
+those reviewers' `run` method exits immediately via `_skip_for_scope`
+and returns `{}`. `_classify_progress` maps an empty update to `empty`,
 and the UI greys those circles. **This is correct behaviour**, not a
 bug. If you expected all three to run, set `scope=[]` (or omit the
 field).

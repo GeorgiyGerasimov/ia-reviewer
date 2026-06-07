@@ -92,19 +92,29 @@ Source files only. Configs and docs are out of scope.
 
 ### OWASP Top 10
 
-Source (same set as Injection) **plus** infra/config so A05 /
-misconfiguration and A08 / integrity-of-CI checks have material to look
-at:
+Source files only (same set as Injection). A05 misconfiguration /
+A07 default-credentials / secret-exposure are delegated to
+**ConfigurationReviewer** below. The OWASP prompt focuses on
+application-level findings: A01 / A02 / A04 / A07-logic / A08 / A09 / A10.
 
 ```
 …all of Injection's source patterns…
-*.yml, *.yaml, *.toml, *.ini, *.conf, *.cfg
+```
+
+### Configuration
+
+The fourth specialist (split out of OWASP — see
+[CLAUDE.md::Specialists](../CLAUDE.md)). Scans config / IaC / env
+files for misconfigurations, weak/default credentials, exposed
+secrets, container hardening, IaC issues, reverse-proxy headers:
+
+```
 Dockerfile, Dockerfile.*, *.dockerfile
-docker-compose*.yml, docker-compose*.yaml
-*.tf, *.tfvars
+docker-compose*.yml, docker-compose*.yaml, .dockerignore
 .env, .env.*
 nginx.conf, *.nginx
-*.properties
+*.tf, *.tfvars
+*.yml, *.yaml, *.toml, *.ini, *.conf, *.cfg, *.properties
 ```
 
 ## Caps & limits

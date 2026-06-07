@@ -1,6 +1,6 @@
 # Architecture
 
-ia-reviewer is a LangGraph state machine that orchestrates three specialist
+ia-reviewer is a LangGraph state machine that orchestrates four specialist
 security reviewers in parallel, optionally pauses for a human, and publishes
 a consolidated Markdown report. This document covers the graph topology,
 the state model, and the agents.
@@ -13,24 +13,24 @@ START
   ▼
 validate_request
   │   ├──→ notify_rejection ──→ END           (reject path)
-  │   └──→ fan-out                            (accept path)
+  │   └──→ retrieve_past_context              (accept path — RAG step)
   ▼
-[ dependency_review · injection_review · owasp_review ]   (parallel)
+retrieve_past_context
+  │   └──→ fan-out
+  ▼
+[ dependency_review · injection_review · owasp_review · configuration_review ]   (parallel)
   │   fan-in
   ▼
 review_decision                                          (Phase B)
   │   ├──→ [reviewers]   (rerun on human-approved clarification, cycle_count++)
   │   └──→ aggregate_results
   ▼
-aggregate_results
-  │
-  ▼
-publish_report                                           (report saved BEFORE any Q&A)
+aggregate_results  →  format_report  →  publish_report   (report saved BEFORE any Q&A)
   │
   ▼
 process_proposal                                         (Phase C — sequential loop)
   │   ├──→ process_proposal   (more pending findings, capped at MAX_EXPLOIT_PROPOSALS=3)
-  │   └──→ END
+  │   └──→ finalize_report ──→ END
 ```
 
 **Why publish before process_proposal.** The exploit-proposal branch
@@ -48,13 +48,22 @@ Wiring lives in [`src/graph/coordinator.py::build_review_graph`](../src/graph/co
 The conditional routers are `route_after_validation`, `route_after_decision`,
 and `route_after_proposal`.
 
-### Why three reviewers in parallel
+### Why four reviewers in parallel
 
 Each specialist has a focused prompt and a focused whitelist. Running them
-sequentially would triple latency without improving recall. The `add`
+sequentially would 4×-multiply latency without improving recall. The `add`
 reducer on `ReviewState.agent_reviews` makes the partial-state writes safe
 under concurrent fan-out — each reviewer returns
 `{"agent_reviews": [one_review]}` and LangGraph concatenates them.
+
+The four specialists, with their distinct surfaces:
+
+| Role | Surface | Strategy |
+|---|---|---|
+| **Dependency** | manifests + lockfiles | Script-first (OSV.dev) + 1 LLM call for summary |
+| **Injection** | source code (`.py` / `.js` / `.go` / ...) | One LLM call per matched file |
+| **OWASP Top 10** | source code only | One LLM call per matched file; A03→Injection, A06→Dependency, A05/A07-creds/secrets→Configuration |
+| **Configuration** | config + IaC + env (`Dockerfile`, `docker-compose*.yml`, `*.tf`, `.env*`, etc.) | One LLM call per matched file. Split out of OWASP — see [CLAUDE.md::Specialists](../CLAUDE.md). |
 
 ### Why exploit proposal is sequential, not parallel
 

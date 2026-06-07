@@ -195,7 +195,7 @@ side-effects (`rm -rf`, API calls, money moves).
 
 **What we do.** The agent layer is **deliberately deterministic**.
 Side effects are gated behind code paths the LLM cannot influence:
-- LLM-driven nodes (`validator`, three reviewers, exploit proposal,
+- LLM-driven nodes (`validator`, four reviewers, exploit proposal,
   judge) all return *data* — JSON parsed into dataclasses. They do
   not call tools, write files, or hit networks.
 - Side-effecting nodes (`coordinator.publish`, `repo_fetcher.clone_repo`,
