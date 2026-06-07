@@ -249,6 +249,12 @@ def _register_routes(app: FastAPI) -> None:
                 "issue": f.get("issue") or "",
                 "exploit_status": existing.get("status") if existing else None,
                 "confidence": existing.get("confidence") if existing else None,
+                # Inline display fields — populated only when an exploit
+                # was actually attempted. UI renders proposal_text +
+                # artifact in a collapsible <details> block under the row
+                # so the user can read the PoC without a second fetch.
+                "proposal_text": existing.get("proposal_text") if existing else None,
+                "artifact": existing.get("artifact") if existing else None,
             })
         # Stable display order so the UI doesn't shuffle rows between renders.
         result.sort(key=lambda r: (r["role"], r["file"] or "", r["line"] or 0))
