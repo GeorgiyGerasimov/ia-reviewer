@@ -37,17 +37,20 @@ describe("<App />", () => {
     expect(screen.getByText("Workflow")).toBeInTheDocument();
   });
 
-  it("does NOT show 'Current review' until a thread_id is selected", () => {
+  it("does NOT open a WS socket until a thread_id is selected", () => {
     render(<App />);
-    expect(screen.queryByText("Current review")).not.toBeInTheDocument();
+    // The hook only opens the socket when threadId becomes
+    // non-null. With nothing selected, MockWebSocket.instances
+    // is empty.
+    expect(MockWebSocket.instances).toHaveLength(0);
   });
 
-  it("flips into watching a thread after a successful submit", async () => {
+  it("opens a WS for the submitted thread and triggers the report fetch", async () => {
     render(<App />);
 
-    // The initial /reviews/active poll already used a generic mock;
-    // the form submit is the next fetch. Stage the POST /review
-    // response for it.
+    // The initial /reviews/active + /reviews polls used the
+    // generic mock from beforeEach. The form submit is the next
+    // fetch — stage the POST /review response for it.
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       new Response(
         JSON.stringify({
@@ -65,10 +68,14 @@ describe("<App />", () => {
     );
     await userEvent.click(screen.getByRole("button", { name: /^review$/i }));
 
-    // The status pane appears with the new thread_id.
-    expect(await screen.findByText("Current review")).toBeInTheDocument();
-    expect(screen.getByText("new-tid-99")).toBeInTheDocument();
-    // The WS hook should have opened a socket against the new thread.
+    // After submit, the hook opens a WS against the new thread.
+    // We poll the mock registry until it appears (RTL's act
+    // flushes the setState, but the hook's useEffect chain runs
+    // one tick later).
+    await screen.findByPlaceholderText(/github\.com\/owner\/repo/);
+    // Use waitFor-style retry via findByText against the report
+    // panel's thread label.
+    await screen.findByText("new-tid-99");
     expect(MockWebSocket.latest().url).toMatch(/\/ws\/chat\/new-tid-99$/);
   });
 });

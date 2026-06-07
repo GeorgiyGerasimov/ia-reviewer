@@ -83,6 +83,10 @@ export interface CriticalFinding {
   exploit_status: "approved" | "skipped_low_confidence" | null;
   proposal_text: string;
   artifact: string;
+  /** Draft confidence score 0-10, surfaced by the backend on
+   *  skipped rows so the UI can explain *why* it was skipped.
+   *  Null when no exploit was attempted yet. */
+  confidence?: number | null;
 }
 
 /** GET /reviews/active — in-flight review snapshot. */
