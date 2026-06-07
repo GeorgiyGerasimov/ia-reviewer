@@ -115,9 +115,10 @@ async def test_returns_critical_findings_with_finding_id(http_client, app, mocke
 async def test_critical_findings_carry_exploit_status_when_attempted(
     http_client, app, mocker
 ):
-    """When an exploit was already generated, the row's `exploit_status`
-    surfaces the latest known state so the UI can render 'View existing'
-    instead of 'Create exploit'."""
+    """When an exploit was already generated, the row carries the full
+    payload (status, confidence, proposal_text, artifact) so the UI can
+    render the inline <details> block from a single fetch — no second
+    round-trip to /reviews/{tid} to pick up the artifact body."""
     crit_finding = {
         "role": "injection",
         "file": "src/auth.py",
@@ -138,8 +139,8 @@ async def test_critical_findings_carry_exploit_status_when_attempted(
                     "role": "injection",
                     "severity": "critical",
                     "status": "approved",
-                    "proposal_text": "…",
-                    "artifact": "curl …",
+                    "proposal_text": "Attacker crafts UNION SELECT …",
+                    "artifact": "curl -X POST http://localhost:8000/login …",
                     "confidence": 8,
                 }
             ],
@@ -155,6 +156,42 @@ async def test_critical_findings_carry_exploit_status_when_attempted(
     assert rows[0]["finding_id"] == fid
     assert rows[0]["exploit_status"] == "approved"
     assert rows[0]["confidence"] == 8
+    # Inline-display fields — UI renders them in a <details> block under
+    # the row, no separate fetch.
+    assert rows[0]["proposal_text"].startswith("Attacker crafts")
+    assert rows[0]["artifact"].startswith("curl -X POST")
+
+
+async def test_critical_findings_proposal_fields_absent_when_not_attempted(
+    http_client, app, mocker
+):
+    """For rows where no exploit was generated yet, the proposal_text /
+    artifact fields are explicitly null — the UI distinguishes 'never
+    attempted' from 'attempted but empty'."""
+    crit_finding = {
+        "role": "owasp",
+        "file": "src/x.py",
+        "line": 1,
+        "severity": "critical",
+        "issue": "broken access control",
+    }
+    fake_store = mocker.AsyncMock()
+    fake_store.get_review = mocker.AsyncMock(
+        return_value={
+            "thread_id": "tid-1",
+            "findings": [crit_finding],
+            "exploit_proposals": [],
+        }
+    )
+    app.state.review_store = fake_store
+
+    response = await http_client.get("/reviews/tid-1/critical-findings")
+
+    rows = response.json()
+    assert len(rows) == 1
+    assert rows[0]["exploit_status"] is None
+    assert rows[0]["proposal_text"] is None
+    assert rows[0]["artifact"] is None
 
 
 async def test_returns_only_critical_severity(http_client, app, mocker):

@@ -313,7 +313,7 @@
 
         /* ── right column: form + chat + report ──────────────────────── */
         /* Section wrappers stay close to the page background — inner
-           cards (`#chat-messages`, `#report-body`, `.exploit-card`) carry
+           cards (`#report-body`, `.cf-row`) carry
            the elevated `--surface` colour. Keeping the wrapper at `--bg`
            gives the cards a visible "lift" in both themes. */
         section { border: 1px solid var(--border); border-radius: 12px; padding: 1rem 1.25rem; margin-bottom: 1.5rem; background: var(--bg); }
@@ -335,26 +335,19 @@
         button:disabled { background: var(--skipped); cursor: not-allowed; }
         #review-status { margin-top: 0.75rem; font-size: 0.9rem; color: var(--muted); min-height: 1.2em; }
         #review-status.error { color: var(--error); }
-        #chat-messages { max-height: 320px; overflow-y: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 0.75rem; margin-bottom: 0.75rem; }
-        /* Same long-token defence as `#report-body` — chat messages can
-           include report-paths, finding-ids, and stray URLs that would
-           otherwise blow the layout outward through their bubble. */
-        .chat-message { padding: 0.5rem 0.75rem; margin-bottom: 0.5rem; border-radius: 6px; font-size: 0.95rem; overflow-wrap: anywhere; word-break: break-word; }
-        /* Per-role chat bubbles. Tinted backgrounds for visual scan;
-           in dark mode the same hues get applied with reduced alpha so
-           they don't fight the page background. */
-        .chat-message.user { background: #ddf4ff; }
-        .chat-message.agent { background: #fff8c5; }
-        :root[data-theme="dark"] .chat-message.user { background: #15324a; }
-        :root[data-theme="dark"] .chat-message.agent { background: #3a3517; }
-        .chat-message.system { background: var(--bg); font-style: italic; color: var(--muted); }
-        .chat-message .role { font-weight: 600; font-size: 0.8rem; text-transform: uppercase; color: var(--muted); margin-bottom: 0.2rem; }
-        .chat-message a { color: var(--accent); }
         .empty { color: var(--muted); padding: 1rem; text-align: center; }
-        /* (Historical: chat-bubble exploit-approval buttons used to live
-           here. With the on-demand UX rework, every exploit interaction
-           moved into the dedicated #critical-findings panel below the
-           report — see styles further down.) */
+        /* Compact thread-id label in the report header. Replaces the
+           ex-`Chat — thread <id>` heading. */
+        .thread-label {
+            font-size: 0.8rem;
+            color: var(--muted);
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            margin-left: 0.6rem;
+        }
+        .thread-label code {
+            background: none;
+            padding: 0;
+        }
 
         /* ── report viewer ───────────────────────────────────────────── */
         #report-panel .report-header {
@@ -859,23 +852,67 @@
             color: var(--muted);
             margin-bottom: 0.45rem;
         }
+        .cf-item {
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            background: var(--surface);
+            margin-bottom: 0.45rem;
+            overflow-wrap: anywhere;
+            word-break: break-word;
+        }
         .cf-row {
             display: flex;
             align-items: center;
             gap: 0.6rem;
             padding: 0.5rem 0.7rem;
-            margin-bottom: 0.45rem;
-            border: 1px solid var(--border);
-            border-radius: 6px;
-            background: var(--surface);
-            overflow-wrap: anywhere;
-            word-break: break-word;
         }
         .cf-row-info {
             flex: 1 1 auto;
             min-width: 0;
             font-size: 0.85rem;
             line-height: 1.4;
+        }
+        /* Inline expandable artifact block under an approved row. The
+           full PoC text lives here so the user can read it without a
+           second tab. Auto-expanded on fresh generation; collapsed by
+           default for historical rows so the list stays compact. */
+        .cf-details {
+            border-top: 1px dashed var(--border);
+            padding: 0.55rem 0.7rem 0.6rem;
+            font-size: 0.85rem;
+            line-height: 1.45;
+        }
+        .cf-details summary {
+            cursor: pointer;
+            color: var(--accent);
+            user-select: none;
+            font-size: 0.8rem;
+            margin-bottom: 0.4rem;
+        }
+        .cf-proposal {
+            margin: 0 0 0.5rem;
+            color: var(--text);
+        }
+        .cf-artifact-label {
+            font-size: 0.75rem;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            margin-bottom: 0.2rem;
+        }
+        .cf-artifact {
+            background: var(--bg);
+            padding: 0.55rem 0.75rem;
+            border-radius: 4px;
+            font-size: 0.78rem;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            margin: 0;
+        }
+        .cf-row-generating {
+            color: var(--accent);
+            font-size: 0.8rem;
+            font-style: italic;
         }
         .cf-row-meta {
             font-size: 0.75rem;
@@ -1023,24 +1060,21 @@
                 <div id="review-status"></div>
             </section>
 
-            <section id="chat-panel" hidden>
-                <h2>Chat — thread <code id="thread-label"></code></h2>
-                <!--
-                  Read-only chat feed. The text input was removed when
-                  the only user→agent interaction (exploit approve /
-                  decline) moved to the on-demand "Create exploit"
-                  buttons inside the Critical findings panel.
-                -->
-                <div id="chat-messages"><div class="empty">No messages yet.</div></div>
-            </section>
+            <!-- Critical findings panel — the primary post-review
+                 surface. Rendered above the full report so the user
+                 sees the actionable rows first. Hidden until the review
+                 has critical findings AND the DB row has been persisted
+                 (loadCriticalFindings retries on 404 to ride out the
+                 race between __done__ and save_review). -->
+            <section id="critical-findings" hidden></section>
 
             <section id="report-panel" hidden>
                 <div class="report-header">
                     <h2>Final report</h2>
+                    <span class="thread-label">thread <code id="thread-label"></code></span>
                     <a id="report-raw-link" href="#" target="_blank">view raw .md ↗</a>
                 </div>
                 <div id="report-body"><div class="empty">Waiting for the review to finish…</div></div>
-                <div id="critical-findings" hidden></div>
             </section>
         </div>
     </div>
@@ -1188,27 +1222,41 @@
         /**
          * Critical findings + on-demand exploit-PoC panel.
          *
-         * Replaces the historical chat-message exploit-approval flow.
-         * Calls `GET /reviews/<tid>/critical-findings` to enumerate
-         * critical findings; each row gets one of:
-         *   • [Create exploit]   — POSTs to /reviews/<tid>/exploits/<fid>
-         *   • [View existing]    — link to the sibling .md artifact
-         *   • status badge       — for low-confidence / declined attempts
+         * Fetches `GET /reviews/<tid>/critical-findings`, which returns one
+         * row per `severity=critical` finding with its current
+         * `exploit_status` AND the full `proposal_text`+`artifact` when an
+         * exploit was generated — so the inline <details> block under the
+         * row renders from a single HTTP call.
          *
-         * One-line disclaimer sits at the top. Cap counter reads
-         * "X / 3 exploits attempted" so the user knows when they're
-         * about to hit the budget ceiling.
+         * Retries on 404 with backoff to ride out the race between the
+         * graph's `__done__` envelope and `_persist_review` writing the
+         * DB row. Without this the panel disappears the instant the review
+         * finishes (loadCriticalFindings hits 404 before save_review lands).
          */
-        async function loadCriticalFindings(threadId) {
+        const MAX_EXPLOITS_PER_REVIEW = 3;  // mirrors src/agents/exploit_proposal.py
+        const CF_FETCH_RETRY_MS = [300, 600, 1200, 2400, 4800];  // ~9s total
+
+        async function loadCriticalFindings(threadId, {retry = true} = {}) {
+            const delays = retry ? CF_FETCH_RETRY_MS : [0];
             let rows = null;
-            try {
-                const r = await fetch("/reviews/" + threadId + "/critical-findings");
-                if (r.ok) rows = await r.json();
-            } catch (_) { /* leave hidden on network blip */ }
+            for (const delay of delays) {
+                if (delay) await new Promise(r => setTimeout(r, delay));
+                try {
+                    const r = await fetch("/reviews/" + threadId + "/critical-findings");
+                    if (r.status === 404) continue;  // DB row not persisted yet
+                    if (r.ok) {
+                        rows = await r.json();
+                        break;
+                    }
+                    // Other non-ok → bail without retry; rendering treats
+                    // null as "nothing to show right now".
+                    break;
+                } catch (_) {
+                    // Network blip — try the next delay (no-op if delays exhausted).
+                }
+            }
             renderCriticalFindings(threadId, rows);
         }
-
-        const MAX_EXPLOITS_PER_REVIEW = 3;  // mirrors src/agents/exploit_proposal.py
 
         function renderCriticalFindings(threadId, rows) {
             const panel = document.getElementById("critical-findings");
@@ -1228,34 +1276,7 @@
                 parts.push(`<div class="cf-cap">Exploit budget reached (${MAX_EXPLOITS_PER_REVIEW}/${MAX_EXPLOITS_PER_REVIEW}). Remaining rows have their Create button disabled.</div>`);
             }
             for (const row of rows) {
-                const fid = row.finding_id || "";
-                const role = escapeHtml(row.role || "?");
-                const file = escapeHtml(row.file || "");
-                const line = row.line ? `:${row.line}` : "";
-                const issue = escapeHtml(row.issue || "");
-                const meta = `<span class="cf-role">${role}</span> · <span class="cf-severity">critical</span> · <code>${file}${line}</code>`;
-                let action;
-                if (row.exploit_status === "approved") {
-                    const href = `/reports/${threadId}.exploit.${fid}.md`;
-                    action = `<a class="cf-btn view" href="${escapeHtml(href)}" target="_blank">View existing</a>`;
-                } else if (row.exploit_status) {
-                    // skipped_low_confidence / declined / etc — show status, no button.
-                    const label = (row.exploit_status || "").replace(/_/g, " ");
-                    action = `<span class="cf-status">${escapeHtml(label)}</span>`;
-                } else if (capReached) {
-                    action = `<button type="button" class="cf-btn" disabled>Cap reached</button>`;
-                } else {
-                    action = `<button type="button" class="cf-btn" data-fid="${escapeHtml(fid)}" data-tid="${escapeHtml(threadId)}">Create exploit</button>`;
-                }
-                parts.push(`
-                    <div class="cf-row" data-fid="${escapeHtml(fid)}">
-                        <div class="cf-row-info">
-                            <span class="cf-row-meta">${meta}</span>
-                            <span class="cf-row-issue">${issue}</span>
-                        </div>
-                        <div class="cf-row-action">${action}</div>
-                    </div>
-                `);
+                parts.push(renderCriticalFindingItem(threadId, row, capReached));
             }
             panel.innerHTML = parts.join("");
             panel.hidden = false;
@@ -1265,34 +1286,133 @@
             });
         }
 
+        /** One `<div class="cf-item">` per critical finding. The visible
+         *  row holds the action (Create / Show details / status badge);
+         *  on approved findings a `<details>` block under the row carries
+         *  the proposal_text + artifact — collapsed by default, expanded
+         *  fresh-on-generation by `createExploit` (open attribute). */
+        function renderCriticalFindingItem(threadId, row, capReached, {autoOpen = false} = {}) {
+            const fid = row.finding_id || "";
+            const role = escapeHtml(row.role || "?");
+            const file = escapeHtml(row.file || "");
+            const line = row.line ? `:${row.line}` : "";
+            const issue = escapeHtml(row.issue || "");
+            const meta = `<span class="cf-role">${role}</span> · <span class="cf-severity">critical</span> · <code>${file}${line}</code>`;
+            const status = row.exploit_status;
+
+            let action = "";
+            let details = "";
+            if (status === "approved") {
+                action = `<button type="button" class="cf-btn view cf-toggle" data-fid="${escapeHtml(fid)}">Show details</button>`;
+                details = renderCriticalFindingDetails(row, autoOpen);
+            } else if (status) {
+                // skipped_low_confidence / declined / etc — badge + show proposal_text if any.
+                const label = (status || "").replace(/_/g, " ");
+                action = `<span class="cf-status">${escapeHtml(label)}</span>`;
+                if (row.proposal_text) {
+                    details = renderCriticalFindingDetails(row, false);
+                }
+            } else if (capReached) {
+                action = `<button type="button" class="cf-btn" disabled>Cap reached</button>`;
+            } else {
+                action = `<button type="button" class="cf-btn" data-fid="${escapeHtml(fid)}" data-tid="${escapeHtml(threadId)}">Create exploit</button>`;
+            }
+            return `
+                <div class="cf-item" data-fid="${escapeHtml(fid)}">
+                    <div class="cf-row">
+                        <div class="cf-row-info">
+                            <span class="cf-row-meta">${meta}</span>
+                            <span class="cf-row-issue">${issue}</span>
+                        </div>
+                        <div class="cf-row-action">${action}</div>
+                    </div>
+                    ${details}
+                </div>
+            `;
+        }
+
+        function renderCriticalFindingDetails(row, autoOpen) {
+            const openAttr = autoOpen ? " open" : "";
+            const proposal = row.proposal_text
+                ? `<p class="cf-proposal">${escapeHtml(row.proposal_text)}</p>`
+                : "";
+            const artifact = row.artifact
+                ? `<div class="cf-artifact-label">PoC artifact</div>
+                   <pre class="cf-artifact">${escapeHtml(row.artifact)}</pre>`
+                : "";
+            return `<details class="cf-details"${openAttr}>
+                <summary>Show / hide PoC</summary>
+                ${proposal}
+                ${artifact}
+            </details>`;
+        }
+
+        /** Click handler for `[Create exploit]`. Instead of refreshing the
+         *  whole panel after the POST (which races against save_review and
+         *  briefly hides the panel), we update ONLY the clicked row in
+         *  place with the proposal returned by the endpoint. The
+         *  `<details>` block auto-expands so the user sees the artifact
+         *  immediately. */
         async function createExploit(btn) {
             const fid = btn.dataset.fid;
             const tid = btn.dataset.tid;
             if (!fid || !tid) return;
-            const originalLabel = btn.textContent;
-            btn.textContent = "Generating…";
-            btn.disabled = true;
+            const item = btn.closest(".cf-item");
+            const actionCell = btn.parentElement;
+            // Inline "Generating…" state — replace the button with a
+            // visible status string instead of mutating the button text
+            // (the button is async-detached anyway when the row re-renders).
+            actionCell.innerHTML = '<span class="cf-row-generating">Generating PoC…</span>';
             try {
-                const r = await fetch(`/reviews/${tid}/exploits/${fid}`, {
-                    method: "POST",
-                });
+                const r = await fetch(`/reviews/${tid}/exploits/${fid}`, {method: "POST"});
                 if (r.status === 409) {
-                    btn.textContent = "Cap reached";
+                    actionCell.innerHTML = '<span class="cf-status">cap reached</span>';
                     return;
                 }
                 if (!r.ok) {
-                    btn.textContent = `Failed (${r.status})`;
-                    setTimeout(() => { btn.textContent = originalLabel; btn.disabled = false; }, 4000);
+                    actionCell.innerHTML = `<span class="cf-status">failed (${r.status})</span>`;
                     return;
                 }
-                // Refresh the panel — the new row state (approved / skipped)
-                // dictates the action that replaces the button.
-                await loadCriticalFindings(tid);
+                const proposal = await r.json();
+                // Build a synthetic row dict in the shape /critical-findings
+                // returns so we can re-render this single item in place.
+                const updatedRow = {
+                    finding_id: fid,
+                    role: proposal.role,
+                    severity: "critical",
+                    file: item.querySelector(".cf-row-meta code")?.textContent?.split(":")[0] || "",
+                    line: null,
+                    issue: item.querySelector(".cf-row-issue")?.textContent || "",
+                    exploit_status: proposal.status,
+                    confidence: proposal.confidence,
+                    proposal_text: proposal.proposal_text,
+                    artifact: proposal.artifact,
+                };
+                const newHtml = renderCriticalFindingItem(tid, updatedRow, false, {autoOpen: true});
+                // Replace the cf-item in place — preserves scroll position.
+                const wrapper = document.createElement("div");
+                wrapper.innerHTML = newHtml;
+                item.replaceWith(wrapper.firstElementChild);
+                // Also refresh the cf-count attempted/total in the header
+                // since one more attempt just landed. Pull the latest
+                // canonical list lazily — no-op if it 404s briefly.
+                loadCriticalFindings(tid, {retry: false}).catch(() => {});
             } catch (e) {
-                btn.textContent = `Error: ${e.message || e}`;
-                setTimeout(() => { btn.textContent = originalLabel; btn.disabled = false; }, 4000);
+                actionCell.innerHTML = `<span class="cf-status">error</span>`;
+                console.error("createExploit failed:", e);
             }
         }
+
+        // Delegated click handler — `.cf-toggle` buttons sit next to a
+        // `<details>` block; clicking them toggles the open state without
+        // needing a per-row event listener.
+        document.addEventListener("click", (ev) => {
+            const toggle = ev.target.closest(".cf-toggle");
+            if (!toggle) return;
+            const item = toggle.closest(".cf-item");
+            const det = item?.querySelector("details.cf-details");
+            if (det) det.open = !det.open;
+        });
 
         pastRefreshBtn.addEventListener("click", refreshPastReviews);
         // Initial load right after the DOM wires up.
@@ -1556,11 +1676,11 @@
 
         const reviewForm = document.getElementById("review-form");
         const reviewStatus = document.getElementById("review-status");
-        const chatPanel = document.getElementById("chat-panel");
-        const chatMessages = document.getElementById("chat-messages");
-        // No free-text user→server channel any more — the chat feed is
-        // read-only. Exploit decisions live in the Critical findings
-        // panel (POST /reviews/{tid}/exploits/{fid}).
+        // Chat panel was removed — exploit decisions live in the
+        // Critical findings panel (POST /reviews/{tid}/exploits/{fid}).
+        // The WebSocket connection survives because progress events
+        // (workflow-circle status, per-file scan envelopes) still flow
+        // over it; we just drop chat-message rendering.
         const threadLabel = document.getElementById("thread-label");
         const reportPanel = document.getElementById("report-panel");
         const reportBody = document.getElementById("report-body");
@@ -2138,18 +2258,12 @@
         function openChat(threadId) {
             currentThread = threadId;
             threadLabel.textContent = threadId;
-            chatPanel.hidden = false;
-            chatMessages.innerHTML = '<div class="empty">No messages yet.</div>';
             resetWorkflow();
 
             if (socket) {
                 socket.close();
                 socket = null;
             }
-
-            fetch(`/chat/${threadId}/history`)
-                .then((r) => r.json())
-                .then((messages) => messages.forEach(renderMessage));
 
             const proto = location.protocol === "https:" ? "wss:" : "ws:";
             socket = new WebSocket(`${proto}//${location.host}/ws/chat/${threadId}`);
@@ -2163,12 +2277,8 @@
                     if (data.node === "__done__") {
                         finalizeWorkflow();
                     } else if (data.node === "__cancelled__") {
-                        // Stop button pressed. Drop any `active` spinners
-                        // and paint everything not-yet-finished as skipped
-                        // (same logic as `__done__` — the run is over,
-                        // whatever wasn't reached won't be reached now).
-                        // The user-visible "Review cancelled by user."
-                        // message is sent separately via the chat broadcast.
+                        // Stop button pressed — paint anything not-yet-
+                        // finished as skipped; the run is over.
                         finalizeWorkflow();
                     } else {
                         markNodeFired(data.node, data.status);
@@ -2180,42 +2290,12 @@
                     }
                     return;
                 }
-                renderMessage(data);
+                // Chat-message payloads (data.role / data.text) are
+                // intentionally ignored — the chat UI was removed when
+                // the only user-facing interrupt (exploit approval)
+                // moved to HTTP. The WS still streams progress events,
+                // which is what we care about.
             };
-            socket.onclose = () => {
-                if (currentThread === threadId) {
-                    appendSystem("Chat disconnected.");
-                }
-            };
-        }
-
-        function renderMessage(message) {
-            if (chatMessages.querySelector(".empty")) {
-                chatMessages.innerHTML = "";
-            }
-            const el = document.createElement("div");
-            el.className = `chat-message ${message.role}`;
-            const role = document.createElement("div");
-            role.className = "role";
-            role.textContent = message.role;
-            const text = document.createElement("div");
-            const linkified = message.text.replace(
-                /(\/reports\/[\w-]+\.md)/g,
-                '<a href="$1" target="_blank">$1</a>'
-            );
-            if (linkified !== message.text) {
-                text.innerHTML = linkified;
-            } else {
-                text.textContent = message.text;
-            }
-            el.appendChild(role);
-            el.appendChild(text);
-            chatMessages.appendChild(el);
-            chatMessages.scrollTop = chatMessages.scrollHeight;
-        }
-
-        function appendSystem(text) {
-            renderMessage({role: "system", text});
         }
 
         // ── Auto-attach when URL has ?thread=<id> ──────────────────────
